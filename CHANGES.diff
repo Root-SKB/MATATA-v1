@@ -1,0 +1,38 @@
+--- agent.py (v10)
++++ agent.py (v10.1 with Bug 1 & 2 fixes)
+
+@@ -214,7 +214,7 @@
+ # === AGENT TURN ===
+-def agent_turn(messages, show_timer):
++def agent_turn(messages, show_timer, command_history=None):
++    if command_history is None:
++        command_history = []
+     max_steps = 5
+     step = 0
+     total_t0 = time.time()
+
+@@ -326,6 +326,24 @@
+         elif fn_name == 'run_shell':
+             cmd = args.get('command', '')
+             reason = args.get('reason', '')
+             if reason: print(f'\U0001f916 {reason}')
++
++            # BUG FIX 2: Reject commands over 200 chars
++            if len(cmd) > 200:
++                print(f'\U0001f6ab Commande trop longue ({len(cmd)} chars > 200). Use simpler.')
++                messages.append({'role': 'tool', 'content': 'Error: command too long. Use simpler approach.'})
++                continue
++
++            # BUG FIX 1: Detect duplicate commands
++            if cmd in command_history:
++                print(f'\U0001f6ab IDENTIQUE à avant. Change d\'approche.')
++                messages.append({'role': 'tool', 'content': 'ERROR: Same command failed before. Use a DIFFERENT simpler approach.'})
++                continue
++
++            command_history.append(cmd)
++            if len(command_history) > 5:
++                command_history.pop(0)
++
+             lvl = classify_command(cmd)
+             print(f'\U0001f4cb {cmd}  [{lvl}] [{step}/{max_steps}]')
+             if lvl == 'blocked':
