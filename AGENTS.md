@@ -35,7 +35,9 @@ python3 -m py_compile agent-pc/agent.py
 ## Architecture essentials
 
 - **3 tools only** (`run_shell`, `search_files`, `system_info`) — proven reliable with 8B. Do not add more.
-- **Ollama config**: `qwen3:8b`, `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `repeat_penalty=1.5`, `num_predict=500`, `num_ctx=4096`, `keep_alive='30m'`. Runs on **Intel Arc MTL iGPU via Vulkan** (`OLLAMA_IGPU_ENABLE=1` in `/etc/systemd/system/ollama.service.d/igpu.conf`): 100% offload, ~2× faster than CPU-only. Ollama v0.32.15 as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`). `num_thread=16` kept in agent options (applies only if layers fall back to CPU).
+- **Model switching**: `MATATA_MODEL=qwen3.5:4b python3 agent-pc/agent.py` (default `qwen3:8b`). Both validated 5/5. qwen3.5:4b: no repeat_penalty (breaks tool calling), same think=False; ~equal speed on iGPU but weaker semantics/French. qwen3.5 default hybrid thinking eats num_predict budget if think=False is omitted — `/no_think` inline does NOT work via Ollama.
+- **Ollama config**: `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `num_predict=500`, `num_ctx=4096`, `keep_alive='30m'`. Runs on **Intel Arc MTL iGPU via Vulkan** (`OLLAMA_IGPU_ENABLE=1` in `/etc/systemd/system/ollama.service.d/igpu.conf`): 100% offload, ~2× faster than CPU-only. Ollama v0.32.15 as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`). `num_thread=16` kept in agent options (applies only if layers fall back to CPU).
+- **Per-generation params**: `repeat_penalty=1.5` only for qwen3:8b — it breaks qwen3.5 tool calling (empty outputs).
 - **Safety**: READ commands auto-execute, WRITE asks confirmation, BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/etc) never. See whitelist in `agent.py:8-17`.
 - **Auto-backup**: Before write operations on existing files, saves to `~/.agent-pc-backups/`.
 - **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup, commands capped at 200 chars.

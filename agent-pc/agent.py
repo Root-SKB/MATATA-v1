@@ -4,6 +4,16 @@
 import subprocess, shlex, re, time, sys, threading, os, json, ollama
 from datetime import datetime
 
+# === MODEL (overridable: MATATA_MODEL=qwen3.5:4b python3 agent.py) ===
+MODEL = os.environ.get('MATATA_MODEL', 'qwen3:8b')
+# think=False required for BOTH generations: qwen3 (issue #10976) and qwen3.5
+# (default hybrid thinking eats the whole num_predict budget -> empty answers).
+IS_Q35 = MODEL.startswith('qwen3.5')
+THINK_KW = {'think': False}
+CHAT_OPTS = {'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
+if not IS_Q35:
+    CHAT_OPTS['repeat_penalty'] = 1.5  # official Qwen3 rec; breaks qwen3.5 tool calling
+
 # === WHITELIST ===
 READ_COMMANDS = {
     'ls','cat','head','tail','df','free','top','whoami','pwd','find',
@@ -205,6 +215,7 @@ Rules:
 1. CALL a tool or give a final answer. Never say "I will...".
 2. Chain tool calls until the task is DONE.
 3. Never invent data — only report tool results.
+4. Greetings and small talk: reply directly, NO tool.
 4. To find files by name: search_files. To find by extension: run_shell with find -iname.
 5. For date/time: run_shell date. To open apps: run_shell xdg-open.
 6. To write/edit files: run_shell with tee or sed.
@@ -244,9 +255,8 @@ def agent_turn(messages, show_timer, command_history=None):
 
         try:
             response = ollama.chat(
-                model='qwen3:8b', messages=messages, think=False, stream=False,
-                tools=TOOLS, keep_alive='30m',
-                options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5, 'num_thread': 16}
+                model=MODEL, messages=messages, stream=False,
+                tools=TOOLS, keep_alive='30m', options=CHAT_OPTS, **THINK_KW
             )
         except Exception as e:
             sp.stop()
@@ -278,9 +288,8 @@ def agent_turn(messages, show_timer, command_history=None):
                 print('  \u26a0\ufe0f Pas de r\u00e9ponse avec outils, retry sans...')
                 try:
                     retry = ollama.chat(
-                        model='qwen3:8b', messages=messages, think=False, stream=False,
-                        tools=TOOLS, keep_alive='30m',
-                        options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5, 'num_thread': 16}
+                        model=MODEL, messages=messages, stream=False,
+                        tools=TOOLS, keep_alive='30m', options=CHAT_OPTS, **THINK_KW
                     )
                     rtxt = retry.get('message', {}).get('content', '')
                     if rtxt.strip():
@@ -400,11 +409,11 @@ def main():
 
     # Warm up
     try:
-        ollama.chat(model='qwen3:8b', messages=[{'role':'user','content':'hi'}],
-                    options={'num_predict':1}, think=False)
+        ollama.chat(model=MODEL, messages=[{'role':'user','content':'hi'}],
+                    options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v10 \u2014 Qwen 3 8B')
+    print(f'\n\U0001f916 Agent PC v10 \u2014 {MODEL}')
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer\n')
 
