@@ -120,7 +120,7 @@ def run_command(cmd_str, timeout=None):
     try:
         r = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=timeout)
         out = (r.stdout or '') + (r.stderr or '')
-        return (out.strip() or "(no output)")[:2000]
+        return (out.strip() or "(no output)")[:600]
     except subprocess.TimeoutExpired: return f"timeout ({timeout}s)"
     except Exception as e: return str(e)
 
@@ -136,7 +136,7 @@ def handle_search_files(args):
     results = run_command(cmd, timeout=15)
     if not results or results == '(no output)': return 'No results found.'
     lines = results.strip().split('\n')
-    return '\n'.join(f"'{l}'" if ' ' in l else l for l in lines)
+    return '\n'.join(f"'{l}'" if ' ' in l else l for l in lines)[:600]
 
 def handle_system_info(args):
     cat = args.get('category', 'all')
@@ -165,7 +165,7 @@ def handle_system_info(args):
             top_mem = '\n'.join(line[:80] for line in top_mem.split('\n'))
             parts.append('=TOP RAM=\n' + top_mem)
 
-    return '\n'.join(parts)
+    return '\n'.join(parts)[:800]
 
 # === UI ===
 class Spinner:
@@ -245,8 +245,8 @@ def agent_turn(messages, show_timer, command_history=None):
         try:
             response = ollama.chat(
                 model='qwen3:8b', messages=messages, think=False, stream=False,
-                tools=TOOLS,
-                options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5}
+                tools=TOOLS, keep_alive='30m',
+                options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5, 'num_thread': 16}
             )
         except Exception as e:
             sp.stop()
@@ -279,7 +279,8 @@ def agent_turn(messages, show_timer, command_history=None):
                 try:
                     retry = ollama.chat(
                         model='qwen3:8b', messages=messages, think=False, stream=False,
-                        options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5}
+                        keep_alive='30m',
+                        options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5, 'num_thread': 16}
                     )
                     rtxt = retry.get('message', {}).get('content', '')
                     if rtxt.strip():

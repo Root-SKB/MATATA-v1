@@ -35,19 +35,18 @@ python3 -m py_compile agent-pc/agent.py
 ## Architecture essentials
 
 - **3 tools only** (`run_shell`, `search_files`, `system_info`) — proven reliable with 8B. Do not add more.
-- **Ollama config**: `qwen3:8b`, `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `repeat_penalty=1.5`, `num_predict=500`, `num_ctx=4096`
+- **Ollama config**: `qwen3:8b`, `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `repeat_penalty=1.5`, `num_predict=500`, `num_ctx=4096`, `num_thread=16` (physical cores), `keep_alive='30m'`. Ollama v0.32.15 runs as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`).
 - **Safety**: READ commands auto-execute, WRITE asks confirmation, BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/etc) never. See whitelist in `agent.py:8-17`.
 - **Auto-backup**: Before write operations on existing files, saves to `~/.agent-pc-backups/`.
 - **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup, commands capped at 200 chars.
-- **CPU-only**: ~10 tok/s. Keep tool outputs SHORT (under 500 chars). `system_info(all)` returns only ram+disk+cpu.
+- **CPU-only**: ~10 tok/s. Keep tool outputs SHORT — caps: 600 chars (shell/search), 800 (system_info). `system_info(all)` returns only ram+disk+cpu.
 
 ## Known bugs (unfixed)
 
-- **BUG 3**: Tool output too long → slow inference. `ps aux` lines truncated to 80 chars, but still can be heavy.
-- **BUG 4**: CPU-only inference is inherently slow (31-600s/turn). No fix.
+- **BUG 4**: CPU-only inference is inherently slow (26-70s/turn since v10.2, was 31-629s). No full fix.
 - **BUG 5**: Model confuses audio/video extensions. Few-shot examples in system prompt help but aren't 100%.
 
-Bugs 1 (command dedup) and 2 (200-char limit) are **fixed** in v10.1.
+Bugs 1 (command dedup), 2 (200-char limit) fixed in v10.1; Bug 3 (tool output caps 600/600/800) fixed in v10.2. `tests.sh` timeouts raised (120-300s) with per-test failure guards.
 
 ## Constraints
 
