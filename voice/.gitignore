@@ -1,0 +1,6 @@
+whisper.cpp/
+build/
+models/*.bin
+models/*.onnx
+models/*.json.tmp
+*.wav

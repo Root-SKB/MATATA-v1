@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent PC v10 — Back to Basics: 3 tools, reliable"""
 
-import subprocess, shlex, re, time, sys, threading, os, json, ollama
+import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
 from datetime import datetime
 
 # === MODEL (overridable: MATATA_MODEL=qwen3.5:4b python3 agent.py) ===
@@ -14,6 +14,57 @@ CHAT_OPTS = {'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'num_threa
 if not IS_Q35:
     CHAT_OPTS['repeat_penalty'] = 1.2  # official Qwen3 rec is 1.5 but it causes early-EOS empty
     # responses after failed tool attempts; 1.2 keeps tool calling reliable (validated v9.2 era)
+
+# === VOICE (Phase 2 — optional --voice flag) ===
+VOICE = False
+_VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'voice')
+WHISPER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-cli')
+WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
+PIPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'fr_FR-siwis-medium.onnx')
+try:
+    PIPER_RATE = json.load(open(PIPER_MODEL + '.json'))['audio']['sample_rate']
+except Exception:
+    PIPER_RATE = 22050
+
+def record_audio(path='/tmp/matata_voice.wav', max_sec=12):
+    p = subprocess.Popen(['arecord', '-f', 'S16_LE', '-r', '16000', path],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print('   \U0001f3a4 Parle... (Entr\u00e9e pour arr\u00eater)')
+    t = threading.Timer(max_sec, lambda: p.send_signal(signal.SIGINT) if p.poll() is None else None)
+    t.start()
+    try:
+        input()
+    finally:
+        t.cancel()
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)
+        p.wait()
+    return path
+
+def transcribe_audio(path):
+    r = subprocess.run([WHISPER_BIN, '-m', WHISPER_MODEL, '-l', 'fr', '-nt', '-np', path],
+                       capture_output=True, text=True, timeout=60)
+    lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    return lines[-1] if lines else ''
+
+def speak(text):
+    if not VOICE or not text.strip():
+        return
+    clean = re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF*`#_\[\]]+', '', text).strip()
+    if not clean:
+        return
+    try:
+        p = subprocess.Popen(['piper', '-m', PIPER_MODEL, '--output-raw'],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL)
+        play = subprocess.Popen(['aplay', '-q', '-f', 'S16_LE', '-r', str(PIPER_RATE), '-c', '1'],
+                                stdin=p.stdout, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        p.stdin.write((clean + '\n').encode())
+        p.stdin.close()
+        play.wait()
+    except Exception:
+        pass
 
 # === WHITELIST ===
 READ_COMMANDS = {
@@ -291,6 +342,7 @@ def agent_turn(messages, show_timer, command_history=None):
 
             if text.strip():
                 print(f'\U0001f916 {text}{ts}\n')
+                speak(text)
             else:
                 # Empty response — try once more without tools
                 print('  \u26a0\ufe0f Pas de r\u00e9ponse avec outils, retry sans...')
@@ -329,8 +381,10 @@ def agent_turn(messages, show_timer, command_history=None):
                             elapsed2 = time.time() - total_t0
                             ts2 = f'  \u23f1\ufe0f {elapsed2:.1f}s' if show_timer else ''
                             print(f'\U0001f916 {rtxt}{ts2}\n')
+                            speak(rtxt)
                     else:
                         print(f'\U0001f916 D\u00e9sol\u00e9, je n\'ai pas pu r\u00e9pondre. Reformulez ou "reset".{ts}\n')
+                        speak('D\u00e9sol\u00e9, je n\'ai pas pu r\u00e9pondre.')
                 except:
                     print(f'\U0001f916 Erreur. Tapez "reset".{ts}\n')
 
@@ -415,7 +469,12 @@ def agent_turn(messages, show_timer, command_history=None):
 
 # === MAIN ===
 def main():
+    global VOICE
     show_timer = '--timer' in sys.argv or '-t' in sys.argv
+    VOICE = '--voice' in sys.argv or '-v' in sys.argv
+    if VOICE and not (os.path.exists(WHISPER_BIN) and os.path.exists(PIPER_MODEL)):
+        print('\u26a0\ufe0f  Voix indisponible : whisper.cpp ou Piper manquant dans voice/ \u2014 mode texte seul.')
+        VOICE = False
     messages = [{'role': 'system', 'content': SYSTEM}]
 
     # Warm up
@@ -424,14 +483,24 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v10 \u2014 {MODEL}')
+    print(f'\n\U0001f916 Agent PC v11 \u2014 {MODEL}' + ('  \U0001f3a4 voix' if VOICE else ''))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
-    print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer\n')
+    print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix\n')
 
     while True:
         try:
-            inp = input('\U0001f9d1 > ').strip()
-        except:
+            if VOICE:
+                input('\U0001f3a4 [Entr\u00e9e puis parle] ')
+                wav = record_audio()
+                inp = transcribe_audio(wav)
+                print(f'\U0001f9d1 (voix) {inp}')
+                if not inp:
+                    print('   (non compris \u2014 r\u00e9essaie)\n'); continue
+            else:
+                inp = input('\U0001f9d1 > ').strip()
+        except KeyboardInterrupt:
+            print('\n\U0001f44b'); break
+        except Exception:
             print('\n\U0001f44b'); break
         if inp.lower() in ('quit','exit','q'):
             print('\U0001f44b'); break
@@ -441,6 +510,9 @@ def main():
         if inp.lower() == 'timer':
             show_timer = not show_timer
             print(f'\u23f1\ufe0f Timer {"ON" if show_timer else "OFF"}\n'); continue
+        if inp.lower() == 'voix':
+            VOICE = not VOICE
+            print(f'\U0001f3a4 Voix {"ON" if VOICE else "OFF"}\n'); continue
         if not inp: continue
         messages.append({'role':'user','content':inp})
         messages = trim_messages(messages)
