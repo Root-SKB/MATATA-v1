@@ -17,6 +17,7 @@ if not IS_Q35:
 
 # === VOICE (Phase 2 — optional --voice flag) ===
 VOICE = False
+VOICE_LANG = 'auto'  # auto | fr | en — 'fr' decodes any speech as French (EN→FR translation effect)
 _VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'voice')
 WHISPER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-cli')
 WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
@@ -42,8 +43,11 @@ def record_audio(path='/tmp/matata_voice.wav', max_sec=12):
     return path
 
 def transcribe_audio(path):
-    r = subprocess.run([WHISPER_BIN, '-m', WHISPER_MODEL, '-l', 'fr', '-nt', '-np', path],
-                       capture_output=True, text=True, timeout=60)
+    cmd = [WHISPER_BIN, '-m', WHISPER_MODEL, '-nt', '-np']
+    if VOICE_LANG != 'auto':
+        cmd += ['-l', VOICE_LANG]
+    cmd.append(path)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
     return lines[-1] if lines else ''
 
@@ -469,7 +473,7 @@ def agent_turn(messages, show_timer, command_history=None):
 
 # === MAIN ===
 def main():
-    global VOICE
+    global VOICE, VOICE_LANG
     show_timer = '--timer' in sys.argv or '-t' in sys.argv
     VOICE = '--voice' in sys.argv or '-v' in sys.argv
     if VOICE and not (os.path.exists(WHISPER_BIN) and os.path.exists(PIPER_MODEL)):
@@ -485,17 +489,24 @@ def main():
 
     print(f'\n\U0001f916 Agent PC v11 \u2014 {MODEL}' + ('  \U0001f3a4 voix' if VOICE else ''))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
-    print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix\n')
+    print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')
+    if VOICE:
+        print('   \U0001f3a4 Entr\u00e9e=parle | tape ton texte au prompt micro | langue fr|en|auto')
+    print()
 
     while True:
         try:
             if VOICE:
-                input('\U0001f3a4 [Entr\u00e9e puis parle] ')
-                wav = record_audio()
-                inp = transcribe_audio(wav)
-                print(f'\U0001f9d1 (voix) {inp}')
-                if not inp:
-                    print('   (non compris \u2014 r\u00e9essaie)\n'); continue
+                typed = input('\U0001f3a4 [Entr\u00e9e=parle | tape ton texte] ')
+                if typed.strip():
+                    inp = typed.strip()
+                    print(f'\U0001f9d1 (clavier) {inp}')
+                else:
+                    wav = record_audio()
+                    inp = transcribe_audio(wav)
+                    print(f'\U0001f9d1 (voix) {inp}')
+                    if not inp:
+                        print('   (non compris \u2014 r\u00e9essaie)\n'); continue
             else:
                 inp = input('\U0001f9d1 > ').strip()
         except KeyboardInterrupt:
@@ -513,6 +524,15 @@ def main():
         if inp.lower() == 'voix':
             VOICE = not VOICE
             print(f'\U0001f3a4 Voix {"ON" if VOICE else "OFF"}\n'); continue
+        if inp.lower().startswith('langue'):
+            parts = inp.lower().split()
+            arg = parts[1] if len(parts) > 1 else ''
+            if arg in ('fr', 'en', 'auto'):
+                VOICE_LANG = arg
+                print(f'\U0001f310 Langue voix : {arg}\n')
+            else:
+                print('Usage: langue fr|en|auto\n')
+            continue
         if not inp: continue
         messages.append({'role':'user','content':inp})
         messages = trim_messages(messages)

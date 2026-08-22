@@ -26,12 +26,35 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
 
-## Current Version: v10.3
+## Current Version: v11 (voice)
 3 tools: run_shell, search_files, system_info
 - v10.1: Bug 1 (dedup sliding window of 5) + Bug 2 (200-char cap) fixed
 - v10.2: Bug 3 fixed — output caps 600 (shell/search) / 800 (system_info)
 - v10.3: empty-response retry keeps tools (fixes JSON-text dead-end);
   multi-model support (MATATA_MODEL); system prompt rule 4 (greetings without tools)
+- v10.4 stabilization: repeat_penalty 1.2 for qwen3:8b ONLY (1.5 official rec caused
+  ~60% early-EOS empties — root cause found via AGENT_DEBUG eval stats); rule 11
+  (no cosmetic retries); Series path structure injected; French INCOMPLETE_PATTERNS
+- v11: voice mode (--voice): arecord 16kHz mono → whisper-cli small/fr → answer →
+  Piper siwis streaming to aplay; VOICE_LANG auto|fr|en ('fr' = EN→FR translate
+  effect); typed text accepted at mic prompt; 'langue fr|en|auto' command
+
+## VOICE MODE (v11)
+- Binaries/models live in ../voice/ (GITIGNORED — rebuild steps below).
+  whisper.cpp: git clone https://github.com/ggml-org/whisper.cpp voice/whisper.cpp &&
+  cmake -B build -DGGML_NATIVE=ON && cmake --build build -j  (bin at build/bin/whisper-cli).
+  Models: ggml-small.bin (~466MB, HF ggerganov/whisper.cpp), Piper siwis medium
+  onnx+json (HF rhasspy/piper-voices .../fr_FR/siwis/medium/) in voice/models/.
+  Config json IS committed (5KB) for the sample_rate.
+- Pipeline: Enter → arecord (SIGINT stops, header finalized) → whisper-cli -nt -np,
+  last stdout line = transcript → agent loop unchanged → final answer piped to piper
+  --output-raw | aplay S16_LE (streaming: playback starts before synthesis ends).
+- Timings measured: STT 3.6s per 12s clip; TTS ~1.3s synth for one sentence;
+  full vocal turn ≈ model time + ~5s overhead. User reported faster than typing.
+- Mic: Intel DMIC array, gain 80% (-10dB). Speak ~30cm away; short phrases may
+  mis-transcribe if far/quiet.
+- Pitfall: at mic prompt, typed words used to be swallowed (input started recording);
+  fixed in v11 — first input captures text and routes through normal commands.
 
 ## KNOWN BUGS (Priority Order)
 

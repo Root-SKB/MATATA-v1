@@ -36,12 +36,15 @@ Fixes appliqués:
 - Bug 3: Truncate output (évite les hallucinations)
 - Few-shot examples (aide le modèle avec des patterns)
 
-### Phase 2: Voice 🔮 À VENIR
-**STT avec Whisper + TTS avec Piper ou Coqui**
+### Phase 2: Voice ✅ FAIT (v11)
+**STT avec Whisper + TTS avec Piper — 100% local**
 
-- Entrée vocale via micro (Whisper local)
-- Sortie vocale via haut-parleur (Piper/Coqui local)
-- Intégration Agent PC
+- `python3 agent-pc/agent.py --voice` : push-to-talk (Entrée → parle → Entrée)
+- STT : whisper.cpp small (~466 Mo, CPU, 3,6 s / 12 s d'audio)
+- TTS : Piper fr_FR-siwis-medium (~61 Mo), streaming vers aplay
+- Langues : auto-détection par défaut, `langue fr|en|auto` en session
+  (mode `fr` = traduction instantanée EN→FR de la parole)
+- Le texte tapé au prompt micro fonctionne aussi (fallback clavier)
 
 ### Phase 3: MATATA Core 🔮 À VENIR
 **Orchestrateur qui connecte Voice + Agent PC**
@@ -123,7 +126,8 @@ MATATA/
 │   ├── requirements.txt     # Dependencies (ollama)
 │   ├── test_fixes.py        # Unit tests
 │   └── tests.sh            # Integration test suite
-├── voice/                  # Phase 2: Voice (placeholder)
+├── voice/                    # Phase 2: Voice — whisper.cpp (build local, gitignored)
+│   └── models/               # ggml-small.bin + siwis onnx (gitignored, config json versionné)
 ├── core/                   # Phase 3: MATATA Core (placeholder)
 ├── cloud/                  # Phase 4: Cloud Mentor (placeholder)
 ├── mcp/                    # Phase 5: MCP Tools (placeholder)
