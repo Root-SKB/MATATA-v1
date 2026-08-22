@@ -21,11 +21,19 @@ VOICE_LANG = 'auto'  # auto | fr | en â€” 'fr' decodes any speech as French (ENâ
 _VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'voice')
 WHISPER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-cli')
 WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
-PIPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'fr_FR-siwis-medium.onnx')
-try:
-    PIPER_RATE = json.load(open(PIPER_MODEL + '.json'))['audio']['sample_rate']
-except Exception:
-    PIPER_RATE = 22050
+VOICE_MODELS = {
+    'fr': os.path.join(_VOICE_DIR, 'models', 'fr_FR-siwis-medium.onnx'),
+    'en': os.path.join(_VOICE_DIR, 'models', 'en_US-lessac-medium.onnx'),
+}
+PIPER_MODEL = VOICE_MODELS['fr']
+_PIPER_RATES = {}
+def _rate_for(model):
+    if model not in _PIPER_RATES:
+        try:
+            _PIPER_RATES[model] = json.load(open(model + '.json'))['audio']['sample_rate']
+        except Exception:
+            _PIPER_RATES[model] = 22050
+    return _PIPER_RATES[model]
 
 def record_audio(path='/tmp/matata_voice.wav', max_sec=12):
     p = subprocess.Popen(['arecord', '-f', 'S16_LE', '-r', '16000', path],
@@ -42,14 +50,44 @@ def record_audio(path='/tmp/matata_voice.wav', max_sec=12):
         p.wait()
     return path
 
+STT_PROMPTS = {
+    'fr': 'Conversation avec MATATA, un assistant vocal local nomm\u00e9 MATATA.',
+    'en': 'Conversation with MATATA, a local voice assistant named MATATA.',
+}
+
+def _stt_pass(path, lang):
+    cmd = [WHISPER_BIN, '-m', WHISPER_MODEL, '-nt', '--prompt',
+           STT_PROMPTS.get(lang, STT_PROMPTS['en']),
+           '-ojf', '-of', '/tmp/matata_stt', '-l', lang, path]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        j = json.load(open('/tmp/matata_stt.json'))
+        segs = j.get('transcription') or []
+        txt = ' '.join(s.get('text', '').strip() for s in segs).strip()
+        ps = [t.get('p', 0.0) for s in segs for t in (s.get('tokens') or [])]
+        conf = sum(ps) / len(ps) if ps else 0.0
+        return txt, conf
+    except Exception:
+        return '', 0.0
+
 def transcribe_audio(path):
-    cmd = [WHISPER_BIN, '-m', WHISPER_MODEL, '-nt', '-np']
-    if VOICE_LANG != 'auto':
-        cmd += ['-l', VOICE_LANG]
-    cmd.append(path)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-    return lines[-1] if lines else ''
+    # auto = dual decode FR+EN, keep the more confident transcript
+    # (single-shot language detection is unreliable on short clips)
+    if VOICE_LANG == 'auto':
+        t_fr, c_fr = _stt_pass(path, 'fr')
+        t_en, c_en = _stt_pass(path, 'en')
+        return t_fr if c_fr >= c_en else t_en
+    txt, _ = _stt_pass(path, VOICE_LANG)
+    return txt
+
+def _voice_for(text):
+    t = text.lower()
+    fr = len(re.findall(r'[\u00e0\u00e2\u00e4\u00e9\u00e8\u00ea\u00eb\u00ee\u00ef\u00f4\u00f6\u00f9\u00fb\u00fc\u00e7]', text)) \
+        + 2 * len(re.findall(r"\b(je|tu|il|elle|nous|vous|est|sont|c'est|dans|pour|avec|tr\u00e8s|voil\u00e0|alors|parce|aussi|\u00eatre|avoir)\b", t)) \
+        + len(re.findall(r"\b(le|la|les|des|une|un|du|et|sur|pas|plus|bien|oui|non|merci|bonjour|heure|r\u00e9ponse|fichier|dossier)\b", t))
+    en = 2 * len(re.findall(r"\b(i'm|you're|it's|that's|what's|isn't|don't|can't|let's|thank|thanks|please|about|right now)\b", t)) \
+        + len(re.findall(r"\b(the|and|you|your|is|are|was|were|what|how|why|when|where|can|will|would|should|this|that|these|those|there|here|with|from|have|has|had|time|help|file|folder)\b", t))
+    return 'en' if en > fr else 'fr'
 
 def speak(text):
     if not VOICE or not text.strip():
@@ -57,11 +95,16 @@ def speak(text):
     clean = re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF*`#_\[\]]+', '', text).strip()
     if not clean:
         return
+    model = VOICE_MODELS.get(_voice_for(clean), PIPER_MODEL)
+    if not os.path.exists(model):
+        model = PIPER_MODEL
+        if not os.path.exists(model):
+            return
     try:
-        p = subprocess.Popen(['piper', '-m', PIPER_MODEL, '--output-raw'],
+        p = subprocess.Popen(['piper', '-m', model, '--output-raw'],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL)
-        play = subprocess.Popen(['aplay', '-q', '-f', 'S16_LE', '-r', str(PIPER_RATE), '-c', '1'],
+        play = subprocess.Popen(['aplay', '-q', '-f', 'S16_LE', '-r', str(_rate_for(model)), '-c', '1'],
                                 stdin=p.stdout, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
         p.stdin.write((clean + '\n').encode())
@@ -281,7 +324,7 @@ Rules:
 7. system_info for RAM, disk, CPU stats.
 8. Keep commands simple. One pipe max.
 9. Never delete (rm/rmdir). Say "interdit".
-10. Reply in FRENCH, concise.
+10. Reply in the user's language (French if they write French, English if they write English), concise.
 11. If a command fails, NEVER redo it with cosmetic changes (different binary path, flags). Run ls on the parent dir to see real names, then adapt.
 
 Examples of good simple commands:

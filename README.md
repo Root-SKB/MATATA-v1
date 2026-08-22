@@ -40,10 +40,11 @@ Fixes appliqués:
 **STT avec Whisper + TTS avec Piper — 100% local**
 
 - `python3 agent-pc/agent.py --voice` : push-to-talk (Entrée → parle → Entrée)
-- STT : whisper.cpp small (~466 Mo, CPU, 3,6 s / 12 s d'audio)
-- TTS : Piper fr_FR-siwis-medium (~61 Mo), streaming vers aplay
+- STT : whisper.cpp small (~466 Mo, CPU, double passe FR/EN avec vote de confiance en auto)
+- TTS : Piper bilingue — fr_FR-siwis (français) + en_US-lessac (anglais), streaming vers aplay
 - Langues : auto-détection par défaut, `langue fr|en|auto` en session
   (mode `fr` = traduction instantanée EN→FR de la parole)
+- Réponses dans la langue de l'utilisateur, lues avec la voix correspondante
 - Le texte tapé au prompt micro fonctionne aussi (fallback clavier)
 
 ### Phase 3: MATATA Core 🔮 À VENIR

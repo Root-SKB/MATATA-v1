@@ -38,21 +38,28 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
 - v11: voice mode (--voice): arecord 16kHz mono → whisper-cli small/fr → answer →
   Piper siwis streaming to aplay; VOICE_LANG auto|fr|en ('fr' = EN→FR translate
   effect); typed text accepted at mic prompt; 'langue fr|en|auto' command
+- v11.1: auto = DUAL decode fr+en passes, keep higher mean token probability
+  (single-shot detection mislabels short code-switched clips); native initial
+  prompt per pass (fr/en) so the lexical bias doesn't degrade the other language;
+  rule 10 replies in user's language; bilingual TTS — speak() picks siwis or
+  en_US-lessac via accent+stopword heuristic (_voice_for, validated 6/6)
 
 ## VOICE MODE (v11)
 - Binaries/models live in ../voice/ (GITIGNORED — rebuild steps below).
   whisper.cpp: git clone https://github.com/ggml-org/whisper.cpp voice/whisper.cpp &&
   cmake -B build -DGGML_NATIVE=ON && cmake --build build -j  (bin at build/bin/whisper-cli).
-  Models: ggml-small.bin (~466MB, HF ggerganov/whisper.cpp), Piper siwis medium
-  onnx+json (HF rhasspy/piper-voices .../fr_FR/siwis/medium/) in voice/models/.
-  Config json IS committed (5KB) for the sample_rate.
-- Pipeline: Enter → arecord (SIGINT stops, header finalized) → whisper-cli -nt -np,
-  last stdout line = transcript → agent loop unchanged → final answer piped to piper
-  --output-raw | aplay S16_LE (streaming: playback starts before synthesis ends).
-- Timings measured: STT 3.6s per 12s clip; TTS ~1.3s synth for one sentence;
-  full vocal turn ≈ model time + ~5s overhead. User reported faster than typing.
+  Models in voice/models/: ggml-small.bin (~466MB, HF ggerganov/whisper.cpp);
+  Piper voices fr_FR-siwis-medium + en_US-lessac-medium (~61MB each,
+  HF rhasspy/piper-voices). Voice config jsons ARE committed (5KB each).
+- Pipeline: Enter → arecord (SIGINT stops, header finalized) → whisper-cli -ojf
+  (auto mode: 2 passes fr+en, winner by mean token 'p' from JSON) → agent loop
+  unchanged → final answer piped to piper --output-raw | aplay S16_LE (streaming:
+  playback starts before synthesis ends). Answer language detected by _voice_for.
+- Timings measured: single STT pass ~3.6s per 12s clip; auto = ~6-7s both passes;
+  TTS ~1.3s synth start (FR) / 4.2s full EN sentence playback; full vocal turn
+  ≈ model time + ~7s overhead. User reported faster than typing.
 - Mic: Intel DMIC array, gain 80% (-10dB). Speak ~30cm away; short phrases may
-  mis-transcribe if far/quiet.
+  mis-transcribe if far/quiet ("Quelle heure" → "Quel air" on quiet input).
 - Pitfall: at mic prompt, typed words used to be swallowed (input started recording);
   fixed in v11 — first input captures text and routes through normal commands.
 
