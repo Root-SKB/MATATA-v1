@@ -12,7 +12,8 @@ IS_Q35 = MODEL.startswith('qwen3.5')
 THINK_KW = {'think': False}
 CHAT_OPTS = {'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
 if not IS_Q35:
-    CHAT_OPTS['repeat_penalty'] = 1.5  # official Qwen3 rec; breaks qwen3.5 tool calling
+    CHAT_OPTS['repeat_penalty'] = 1.2  # official Qwen3 rec is 1.5 but it causes early-EOS empty
+    # responses after failed tool attempts; 1.2 keeps tool calling reliable (validated v9.2 era)
 
 # === WHITELIST ===
 READ_COMMANDS = {
@@ -137,7 +138,10 @@ def run_command(cmd_str, timeout=None):
 def handle_search_files(args):
     name = args.get('name', '')
     name = re.split(r'[\s*,;|]+', name)[0].strip('.*')
-    if not name: return 'Error: provide a keyword.'
+    if not name:
+        d = args.get('search_dir', os.path.expanduser('~'))
+        listing = run_command(f'ls {shlex.quote(d)}')[:300]
+        return f"Error: provide a keyword. Contents of {d}: {listing}"
     search_dir = args.get('search_dir', os.path.expanduser('~'))
     file_type = args.get('file_type', '')
     cmd = f'find {shlex.quote(search_dir)} -iname "*{name}*"'
@@ -209,7 +213,7 @@ USER = os.environ.get('USER', 'user')
 SYSTEM = f"""You are Agent PC, a local Ubuntu assistant. You help by CALLING tools, not by describing actions.
 
 Context: User={USER}, Home={HOME}, Ubuntu 24.04, 32GB RAM, Intel Ultra 7 155H.
-Known: Videos={HOME}/Videos/Film, Desktop={HOME}/Desktop, Projects={HOME}/dev/personal/agent-pc/
+Known: Series={HOME}/Videos/Film/Series/<name>/ (each series = one subdir with .mkv files), Desktop={HOME}/Desktop, Projects={HOME}/dev/personal/agent-pc/
 
 Rules:
 1. CALL a tool or give a final answer. Never say "I will...".
@@ -223,6 +227,7 @@ Rules:
 8. Keep commands simple. One pipe max.
 9. Never delete (rm/rmdir). Say "interdit".
 10. Reply in FRENCH, concise.
+11. If a command fails, NEVER redo it with cosmetic changes (different binary path, flags). Run ls on the parent dir to see real names, then adapt.
 
 Examples of good simple commands:
 - "combien de musique" → run_shell: find ~/Music -type f | wc -l
@@ -232,7 +237,7 @@ Examples of good simple commands:
 MAX_HISTORY = 20
 
 INCOMPLETE_PATTERNS = re.compile(
-    r'(je vais |I will |let me |I\'ll |I am going to )',
+    r'(je vais |I will |let me |I\'ll |I am going to |voulez-vous |souhaitez-vous |désirez-vous )',
     re.IGNORECASE
 )
 
@@ -267,6 +272,9 @@ def agent_turn(messages, show_timer, command_history=None):
         msg = response.get('message', {})
         text = msg.get('content', '') or ''
         tool_calls = msg.get('tool_calls', None) or []
+        if os.environ.get('AGENT_DEBUG'):
+            print(f"[DBG] step={step} tc={len(tool_calls)} text={len(text)} "
+                  f"eval={response.get('eval_count')} reason={response.get('done_reason')}", file=sys.stderr)
 
         # No tool calls — final response
         if not tool_calls:
@@ -292,6 +300,9 @@ def agent_turn(messages, show_timer, command_history=None):
                         tools=TOOLS, keep_alive='30m', options=CHAT_OPTS, **THINK_KW
                     )
                     rtxt = retry.get('message', {}).get('content', '')
+                    if os.environ.get('AGENT_DEBUG'):
+                        print(f"[DBG] retry tc={len(retry.get('message', {}).get('tool_calls') or [])} "
+                              f"text={len(rtxt)} eval={retry.get('eval_count')} reason={retry.get('done_reason')}", file=sys.stderr)
                     if rtxt.strip():
                         # Check if retry produced tool-like text
                         tc_retry = retry.get('message', {}).get('tool_calls', None)

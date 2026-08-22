@@ -70,9 +70,9 @@ Fixes appliqués:
 ### Prérequis
 
 - **Ubuntu 24.04** (testé)
-- **Ollama v0.22.1+** (installer via https://ollama.ai)
+- **Ollama v0.32+ en service systemd** (installer via https://ollama.ai)
 - **Python 3.10+**
-- **32GB RAM minimum** (CPU-only, sinon très lent)
+- **32GB RAM minimum**
 
 ### Setup
 
@@ -90,7 +90,13 @@ pip install -r agent-pc/requirements.txt
 
 # 4. Lance l'agent
 python agent-pc/agent.py --timer
+# Variante modèle léger :
+MATATA_MODEL=qwen3.5:4b python agent-pc/agent.py --timer
 ```
+
+> ⚠️ Les modèles vivent dans `/usr/share/ollama/.ollama/models` (service systemd).
+> Ne lance pas `ollama serve` manuellement : il regarderait `~/.ollama` (vide) et re-téléchargerait les modèles.
+> Si l'API ne répond pas : `sudo systemctl start ollama`.
 
 ### Vérification
 
@@ -136,11 +142,11 @@ MATATA/
 | **OS** | Ubuntu 24.04, kernel 6.17.0-1007-oem |
 | **CPU** | Intel Core Ultra 7 155H (22 threads, 16 cores) |
 | **RAM** | 32GB DDR5-5600 |
-| **Disk** | 512GB NVMe (247GB free) |
-| **GPU** | CPU-only (Intel Arc iGPU NOT used) |
-| **Model** | Qwen3 8B (5.2GB Q4_K_M quantization) |
-| **Inference** | ~10 tok/s CPU-only, ~31-100s per turn |
-| **Ollama** | v0.22.1, native tool calling |
+| **Disk** | 512GB NVMe (195GB free) |
+| **GPU** | Intel Arc iGPU (MTL) — utilisé via Vulkan (`OLLAMA_IGPU_ENABLE=1`), 100% offload |
+| **Model** | Qwen3 8B (défaut) ou Qwen3.5 4B via `MATATA_MODEL` |
+| **Inference** | ~6-10 tok/s iGPU, ~9-50s per turn (vs 31-600s CPU-only avant) |
+| **Ollama** | v0.32.15, service systemd, native tool calling |
 
 ---
 
@@ -209,7 +215,7 @@ Avant `sed -i`, `tee >`, etc., backup auto à `~/.agent-pc-backups/`
 **Fix**: Truncate ps output + "all" = ram+disk+cpu only
 
 ### Bug 4: Slow inference (31-629s per turn)
-**Status**: CPU-only limitation, pas de fix facile
+**Status**: ✅ Résolu en pratique — offload iGPU Vulkan (Ollama v0.32+, `OLLAMA_IGPU_ENABLE=1`)
 
 ### Bug 5: Model confuses music with video
 **Status**: Few-shot examples help, mais pas 100%
@@ -218,11 +224,11 @@ Avant `sed -i`, `tee >`, etc., backup auto à `~/.agent-pc-backups/`
 
 ## Roadmap
 
+- [x] Optimiser inference ✅ (iGPU Vulkan : ×2 à ×10 selon requête)
 - [ ] Phase 2: Voice (STT + TTS)
 - [ ] Phase 3: MATATA Core (orchestrateur)
-- [ ] Phase 4: Cloud Mentor (Groq fallback)
+- [ ] Phase 4: Cloud Mentor (Groq fallback) ⚠️ conflit avec la contrainte ZERO-cloud — décision pending
 - [ ] Phase 5: MCP Tools (serveur)
-- [ ] Optimiser inference (quantize further? Phi-3.5?)
 - [ ] Support d'autres langues
 - [ ] Web UI (Gradio or Streamlit)
 - [ ] Tests CI/CD (GitHub Actions)
@@ -264,6 +270,6 @@ Créé comme projet personnel d'IA accessible et offline-first pour Ubuntu.
 
 ---
 
-**Version**: 1.0.0 (Phase 1)  
-**Last Updated**: 2026-05-10  
+**Version**: 1.1.0 (Phase 1 + iGPU)  
+**Last Updated**: 2026-08-22  
 **Status**: Stable ✅
