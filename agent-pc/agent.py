@@ -279,7 +279,7 @@ def agent_turn(messages, show_timer, command_history=None):
                 try:
                     retry = ollama.chat(
                         model='qwen3:8b', messages=messages, think=False, stream=False,
-                        keep_alive='30m',
+                        tools=TOOLS, keep_alive='30m',
                         options={'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'repeat_penalty': 1.5, 'num_thread': 16}
                     )
                     rtxt = retry.get('message', {}).get('content', '')
