@@ -35,11 +35,11 @@ python3 -m py_compile agent-pc/agent.py
 ## Architecture essentials
 
 - **3 tools only** (`run_shell`, `search_files`, `system_info`) — proven reliable with 8B. Do not add more.
-- **Ollama config**: `qwen3:8b`, `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `repeat_penalty=1.5`, `num_predict=500`, `num_ctx=4096`, `num_thread=16` (physical cores), `keep_alive='30m'`. Ollama v0.32.15 runs as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`).
+- **Ollama config**: `qwen3:8b`, `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=False`, `temperature=0.3`, `repeat_penalty=1.5`, `num_predict=500`, `num_ctx=4096`, `keep_alive='30m'`. Runs on **Intel Arc MTL iGPU via Vulkan** (`OLLAMA_IGPU_ENABLE=1` in `/etc/systemd/system/ollama.service.d/igpu.conf`): 100% offload, ~2× faster than CPU-only. Ollama v0.32.15 as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`). `num_thread=16` kept in agent options (applies only if layers fall back to CPU).
 - **Safety**: READ commands auto-execute, WRITE asks confirmation, BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/etc) never. See whitelist in `agent.py:8-17`.
 - **Auto-backup**: Before write operations on existing files, saves to `~/.agent-pc-backups/`.
 - **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup, commands capped at 200 chars.
-- **CPU-only**: ~10 tok/s. Keep tool outputs SHORT — caps: 600 chars (shell/search), 800 (system_info). `system_info(all)` returns only ram+disk+cpu.
+- **CPU/iGPU**: Vulkan iGPU ≈ 2× CPU speed (Hi 9-14s, complex multi-step 25-45s). Keep tool outputs SHORT — caps: 600 chars (shell/search), 800 (system_info). `system_info(all)` returns only ram+disk+cpu.
 
 ## Known bugs (unfixed)
 
