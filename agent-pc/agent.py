@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Agent PC v10 — Back to Basics: 3 tools, reliable"""
+"""Agent PC v12.4 — 3 tools + voix push-to-talk + mains libres (--wake)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
+import urllib.request, io, uuid, wave
+from collections import deque
 from datetime import datetime
 
 # === MODEL (overridable: MATATA_MODEL=qwen3.5:4b python3 agent.py) ===
@@ -10,14 +12,14 @@ MODEL = os.environ.get('MATATA_MODEL', 'qwen3:8b')
 # (default hybrid thinking eats the whole num_predict budget -> empty answers).
 IS_Q35 = MODEL.startswith('qwen3.5')
 THINK_KW = {'think': False}
-CHAT_OPTS = {'num_predict': 500, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
+CHAT_OPTS = {'num_predict': 800, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
 if not IS_Q35:
     CHAT_OPTS['repeat_penalty'] = 1.2  # official Qwen3 rec is 1.5 but it causes early-EOS empty
     # responses after failed tool attempts; 1.2 keeps tool calling reliable (validated v9.2 era)
 
 # === VOICE (Phase 2 — optional --voice flag) ===
 VOICE = False
-VOICE_LANG = 'auto'  # auto | fr | en — 'fr' decodes any speech as French (EN→FR translation effect)
+VOICE_LANG = 'fr'  # fr | auto | en — 'fr' = direct, 'auto' = double passe fr+en (pour les code-switchers)
 _VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'voice')
 WHISPER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-cli')
 WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
@@ -26,6 +28,10 @@ VOICE_MODELS = {
     'en': os.path.join(_VOICE_DIR, 'models', 'en_US-lessac-medium.onnx'),
 }
 PIPER_MODEL = VOICE_MODELS['fr']
+_WHISPER_SERVER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-server')
+_WHISPER_SERVER_PORT = int(os.environ.get('MATATA_WHISPER_PORT', '18080'))
+_WHISPER_SERVER_URL = f'http://127.0.0.1:{_WHISPER_SERVER_PORT}/inference'
+_whisper_server_proc = None
 _PIPER_RATES = {}
 def _rate_for(model):
     if model not in _PIPER_RATES:
@@ -34,6 +40,47 @@ def _rate_for(model):
         except Exception:
             _PIPER_RATES[model] = 22050
     return _PIPER_RATES[model]
+
+def _whisper_server_start():
+    """Lance whisper-server en arrière-plan. Retourne True si prêt."""
+    global _whisper_server_proc
+    if _whisper_server_proc and _whisper_server_proc.poll() is None:
+        return True
+    if not os.path.exists(_WHISPER_SERVER_BIN):
+        return False
+    try:
+        _whisper_server_proc = subprocess.Popen(
+            [_WHISPER_SERVER_BIN, '-m', WHISPER_MODEL, '--port', str(_WHISPER_SERVER_PORT),
+             '-t', '4', '--no-speech-thold', '0.6', '--no-language-probabilities',
+             '--ctx', '0'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Attente du chargement du modèle (~3-5s la première fois)
+        for _ in range(15):
+            time.sleep(1)
+            if _whisper_server_proc.poll() is not None:
+                _whisper_server_proc = None
+                return False
+            try:
+                urllib.request.urlopen(
+                    f'http://127.0.0.1:{_WHISPER_SERVER_PORT}/', timeout=1)
+                return True
+            except Exception:
+                pass
+        return False
+    except Exception:
+        _whisper_server_proc = None
+        return False
+
+def _whisper_server_stop():
+    global _whisper_server_proc
+    if _whisper_server_proc:
+        try:
+            _whisper_server_proc.terminate()
+            _whisper_server_proc.wait(timeout=3)
+        except Exception:
+            try: _whisper_server_proc.kill()
+            except Exception: pass
+        _whisper_server_proc = None
 
 def record_audio(path='/tmp/matata_voice.wav', max_sec=12):
     p = subprocess.Popen(['arecord', '-f', 'S16_LE', '-r', '16000', path],
@@ -56,8 +103,47 @@ STT_PROMPTS = {
 }
 
 def _stt_pass(path, lang):
-    cmd = [WHISPER_BIN, '-m', WHISPER_MODEL, '-nt', '--prompt',
-           STT_PROMPTS.get(lang, STT_PROMPTS['en']),
+    prompt = STT_PROMPTS.get(lang, STT_PROMPTS['en'])
+    # Serveur whisper : pas de rechargement du modèle (~1s économisées/passe)
+    if _whisper_server_proc and _whisper_server_proc.poll() is None:
+        try:
+            return _stt_server(path, lang, prompt)
+        except Exception:
+            pass
+    # Fallback CLI
+    return _stt_cli(path, lang, prompt)
+
+def _stt_server(path, lang, prompt):
+    """Transcription via whisper-server HTTP (modèle déjà en RAM)."""
+    wav_bytes = open(path, 'rb').read()
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, val in [('file', None), ('language', lang), ('prompt', prompt),
+                      ('response_format', 'verbose_json'), ('no_timestamps', 'true'),
+                      ('temperature', '0.0')]:
+        parts.append(f'--{boundary}\r\n'.encode())
+        if name == 'file':
+            parts += [b'Content-Disposition: form-data; name="file"; filename="a.wav"\r\n',
+                      b'Content-Type: audio/wav\r\n\r\n', wav_bytes, b'\r\n']
+        else:
+            parts += [f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                      f'{val}\r\n'.encode()]
+    parts.append(f'--{boundary}--\r\n'.encode())
+    body = b''.join(parts)
+    req = urllib.request.Request(
+        _WHISPER_SERVER_URL, data=body,
+        headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    resp = urllib.request.urlopen(req, timeout=30)
+    result = json.loads(resp.read())
+    txt = result.get('text', '').strip()
+    segs = result.get('segments', [])
+    ps = [w.get('probability', 0.0) for s in segs for w in (s.get('words') or [])]
+    conf = sum(ps) / len(ps) if ps else 0.0
+    return txt, conf
+
+def _stt_cli(path, lang, prompt):
+    """Transcription via whisper-cli (recharge le modèle à chaque appel)."""
+    cmd = [WHISPER_BIN, '-m', WHISPER_MODEL, '-nt', '--prompt', prompt,
            '-ojf', '-of', '/tmp/matata_stt', '-l', lang, path]
     try:
         subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -70,15 +156,21 @@ def _stt_pass(path, lang):
     except Exception:
         return '', 0.0
 
+_TAG_RE = re.compile(r'\[[^\]]*\]|\([^)]*\)')
+
+def _clean_stt(txt):
+    """Vire les artefacts whisper [Musique]/(Bip)/[BLANK_AUDIO]/[X speaking] (fr/en)."""
+    return _TAG_RE.sub(' ', txt).strip()
+
 def transcribe_audio(path):
     # auto = dual decode FR+EN, keep the more confident transcript
     # (single-shot language detection is unreliable on short clips)
     if VOICE_LANG == 'auto':
         t_fr, c_fr = _stt_pass(path, 'fr')
         t_en, c_en = _stt_pass(path, 'en')
-        return t_fr if c_fr >= c_en else t_en
+        return _clean_stt(t_fr if c_fr >= c_en else t_en)
     txt, _ = _stt_pass(path, VOICE_LANG)
-    return txt
+    return _clean_stt(txt)
 
 def _voice_for(text):
     t = text.lower()
@@ -89,29 +181,294 @@ def _voice_for(text):
         + len(re.findall(r"\b(the|and|you|your|is|are|was|were|what|how|why|when|where|can|will|would|should|this|that|these|those|there|here|with|from|have|has|had|time|help|file|folder)\b", t))
     return 'en' if en > fr else 'fr'
 
+_PIPER_VOICES = {}  # lang -> PiperVoice (lazy-loaded, une seule fois)
+
+def _get_piper(lang='fr'):
+    """Lazy-load PiperVoice (1s first call, cached after)."""
+    if lang not in _PIPER_VOICES:
+        model = VOICE_MODELS.get(lang, PIPER_MODEL)
+        if not os.path.exists(model):
+            return None
+        try:
+            from piper import PiperVoice
+            _PIPER_VOICES[lang] = PiperVoice.load(model, config_path=model + '.json')
+        except Exception:
+            return None
+    return _PIPER_VOICES[lang]
+
 def speak(text):
     if not VOICE or not text.strip():
         return
     clean = re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF*`#_\[\]]+', '', text).strip()
     if not clean:
         return
-    model = VOICE_MODELS.get(_voice_for(clean), PIPER_MODEL)
-    if not os.path.exists(model):
-        model = PIPER_MODEL
-        if not os.path.exists(model):
-            return
+    lang = _voice_for(clean)
+    voice = _get_piper(lang)
+    if voice is None:
+        return
     try:
-        p = subprocess.Popen(['piper', '-m', model, '--output-raw'],
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL)
-        play = subprocess.Popen(['aplay', '-q', '-f', 'S16_LE', '-r', str(_rate_for(model)), '-c', '1'],
-                                stdin=p.stdout, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-        p.stdin.write((clean + '\n').encode())
-        p.stdin.close()
-        play.wait()
+        rate = _rate_for(VOICE_MODELS.get(lang, PIPER_MODEL))
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as wf:
+            voice.synthesize_wav(clean, wf)
+        pcm = buf.getvalue()
+        subprocess.run(['aplay', '-q', '-f', 'S16_LE', '-r', str(rate), '-c', '1'],
+                       input=pcm, timeout=30)
     except Exception:
         pass
+
+# === WAKE WORD (--wake, v12) ===
+WAKE = False
+WAKE_THRESHOLD = float(os.environ.get('MATATA_WAKE_THRESHOLD', '0.5'))
+WAKE_VAD = float(os.environ.get('MATATA_WAKE_VAD', '0.25'))
+WAKE_MODEL_PATH = os.environ.get(
+    'MATATA_WAKE_MODEL',
+    os.path.join(_VOICE_DIR, 'models', 'matata.onnx'))
+WAKE_DURATION = float(os.environ.get('MATATA_WAKE_DURATION', '0'))  # 0 = infini
+ACTIF_S = float(os.environ.get('MATATA_ACTIF', '15'))   # dialogue libre après un échange
+_FRAME = 1280          # 80 ms @16 kHz — pas natif openwakeword
+_PREROLL_S = 1.7       # mémoire avant détection (pour la confirmation whisper)
+_BEEP_OK = '/tmp/matata_wake_ok.wav'
+_BEEP_KO = '/tmp/matata_wake_ko.wav'
+
+_ACCENTS = str.maketrans('àâäéèêëîïôöùûüç', 'aaaeeeeiioouuuc')
+
+_WAKE_PREFIX_RE = re.compile(
+    r"^\s*(salut|ok|oui|hey|bon|bonjour)?\s*ma.?ta.?ta\b[\s,.!:;]*", re.I)
+
+def _strip_wake_prefix(txt):
+    """Enlève un « (salut) MATATA » résiduel en début de commande."""
+    return _WAKE_PREFIX_RE.sub('', txt, count=1).strip()
+
+def _voice_cmd(inp):
+    """« Au revoir. »/« et reset »/« stop » -> quit/reset. None = demande normale.
+    Tolérant ponctuation/accents ; décision sur les 1-2 derniers mots, phrase ≤ 3 mots."""
+    words = [w for w in re.sub(r'[^a-z ]', '',
+             inp.lower().translate(_ACCENTS)).split() if w]
+    if not words or len(words) > 3:
+        return None
+    for n in (2, 1):
+        cand = ''.join(words[-n:])
+        if cand in ('aurevoir', 'arretetoi', 'quitter', 'exit', 'quit', 'stop'):
+            return 'quit'
+        if n == 1 and cand == 'reset':
+            return 'reset'
+    return None
+
+def _norm_match(text):
+    return re.sub(r'[^a-z]', '', text.lower().translate(_ACCENTS))
+
+def _make_beeps():
+    try:
+        if not os.path.exists(_BEEP_OK):
+            subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi',
+                            '-i', 'sine=frequency=880:duration=0.12', '-ar', '16000', _BEEP_OK],
+                           check=True, capture_output=True)
+        if not os.path.exists(_BEEP_KO):
+            subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi',
+                            '-i', 'sine=frequency=330:duration=0.18', '-ar', '16000', _BEEP_KO],
+                           check=True, capture_output=True)
+    except Exception:
+        pass
+
+def _play_beep(kind):
+    f = _BEEP_OK if kind == 'ok' else _BEEP_KO
+    if os.path.exists(f):
+        subprocess.run(['aplay', '-q', f], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+
+class MicStream:
+    """arecord continu par frames 1280. respawn() = enregistreur relancé,
+    tampon vidé : plus de frames périmées après une confirmation/bip/TTS."""
+    def __init__(self):
+        self.p = None
+        self._start()
+
+    def _start(self):
+        self.p = subprocess.Popen(
+            ['arecord', '-f', 'S16_LE', '-r', '16000', '-c', '1', '-t', 'raw', '-q'],
+            stdout=subprocess.PIPE)
+
+    def _stop(self):
+        try:
+            if self.p and self.p.poll() is None:
+                self.p.terminate()
+            if self.p:
+                self.p.wait(timeout=1)
+        except Exception:
+            pass
+
+    def respawn(self):
+        self._stop()
+        self._start()
+
+    def frames(self):
+        while True:
+            raw = self.p.stdout.read(_FRAME * 2)
+            if len(raw) < _FRAME * 2:
+                break
+            yield raw
+
+    def close(self):
+        self._stop()
+
+def wake_confirm(frames):
+    """Vérifie via whisper que le pré-roll contient vraiment « matata »."""
+    import wave as _wave
+    path = '/tmp/matata_wake_check.wav'
+    with _wave.open(path, 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(b''.join(frames))
+    txt, _ = _stt_pass(path, 'fr')
+    core = _TAG_RE.sub('', txt)          # "[MATATA speaking]" seul = hallucination -> rejet
+    ok = 'matata' in _norm_match(core)
+    print(f'   {"🔔" if ok else "·"} confirmation wake: "{txt.strip()[:40]}" -> '
+          f'{"accepté" if ok else "rejeté"}')
+    return ok
+
+def capture_command(stream, start_timeout=6.0, skip_frames=0):
+    """Enregistre la commande après le wake : endpointing énergie, max 10 s.
+    skip_frames : jette les N premières frames (queue du bip/réverbération)."""
+    import array as _arr
+    frames, speech, silence_run = [], False, 0
+    t0 = time.time()
+    skipped = 0
+    for raw in stream:
+        if skipped < skip_frames:
+            skipped += 1
+            continue
+        a = _arr.array('h'); a.frombytes(raw)
+        rms = (sum(v*v for v in a[::4]) / (len(a)//4)) ** 0.5 if len(a) else 0
+        if not speech and time.time() - t0 > start_timeout:
+            return None                      # rien dit -> abandon
+        if not speech:
+            if rms > 260:
+                speech = True
+                frames.append(raw)
+            continue
+        frames.append(raw)
+        silence_run = silence_run + 1 if rms < 150 else 0
+        dur = len(frames) * _FRAME / 16000
+        if (silence_run >= 12 or dur > 10.0):  # 12 frames ≈ 1,0 s de silence
+            break
+    if len(frames) * _FRAME / 16000 < 0.5:
+        return None
+    import wave as _wave2
+    path = '/tmp/matata_cmd.wav'
+    with _wave2.open(path, 'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(b''.join(frames))
+    return path
+
+def hands_free_loop(messages, show_timer):
+    global VOICE_LANG
+    import numpy as np
+    import array
+    from openwakeword.model import Model
+    if os.environ.get('MATATA_WAKE_LANG', 'fr') != 'auto':
+        VOICE_LANG = 'fr'      # single-pass : ~-3-4 s par commande (auto = double passe)
+        print('   🇫🇷 STT direct fr (env MATATA_WAKE_LANG=auto pour la double passe)')
+    oww = Model(wakeword_models=[WAKE_MODEL_PATH],
+                inference_framework='onnx', vad_threshold=WAKE_VAD)
+    _make_beeps()
+    refractory = 0.0
+    veille_t0 = time.time()
+    actif_until = 0.0          # 0 = en veille ; sinon dialogue libre jusqu'à cette date
+    print(f'   🎙️ Veille : dis « MATATA » puis ta commande — ensuite dialogue libre '
+          f'{ACTIF_S:.0f} s sans mot-clé')
+    print(f'      seuil {WAKE_THRESHOLD}, vad {WAKE_VAD} | vocal : « au revoir », '
+          f'« stop », « reset » | Ctrl+C pour quitter\n')
+    ms = MicStream()
+    ring = deque(maxlen=int(_PREROLL_S * 16000 // _FRAME))
+
+    def handle_command(cmd_path):
+        """STT + traitement. True = continuer, False = quitter."""
+        nonlocal actif_until, refractory
+        inp = _strip_wake_prefix(transcribe_audio(cmd_path))
+        print(f'\n🧑 (voix) {inp}')
+        vc = _voice_cmd(inp)
+        if vc == 'quit':
+            speak('À bientôt !')
+            print('👋')
+            return False
+        if not inp:
+            _play_beep('ko')
+            return True
+        if vc == 'reset':
+            messages[:] = [{'role': 'system', 'content': SYSTEM}]
+            actif_until = time.time() + ACTIF_S
+            print('🔄 Reset.\n')
+            return True
+        messages.append({'role': 'user', 'content': inp})
+        messages[:] = trim_messages(messages)
+        log_event('user', inp)
+        agent_turn(messages, show_timer)
+        print()
+        actif_until = time.time() + ACTIF_S     # la conversation reste ouverte
+        refractory = time.time() + 1.5
+        return True
+
+    try:
+        while True:
+            # --- ÉTAT ACTIF : commande directe, sans mot-clé ---
+            if time.time() < actif_until:
+                reste = actif_until - time.time()
+                print(f'   🎧 Actif ({reste:.0f} s) — parle sans dire « MATATA »')
+                cmd_path = capture_command(ms.frames(), start_timeout=max(reste, 1.0))
+                if not cmd_path:
+                    actif_until = 0.0
+                    oww.reset(); ring.clear()
+                    ms.respawn()               # vide le tampon (échos éventuels)
+                    print('   💤 Retour veille — dis « MATATA » pour reprendre\n')
+                    continue
+                if handle_command(cmd_path) is False:
+                    return
+                ms.respawn()                   # TTS terminé -> tampon propre
+                continue
+            # --- ÉTAT VEILLE : détection du mot-clé ---
+            fit = ms.frames()
+            for raw in fit:
+                score = list(oww.predict(
+                    np.frombuffer(raw, dtype='int16')).values())[0]
+                ring.append(raw)
+                now = time.time()
+                if WAKE_DURATION and now - veille_t0 >= WAKE_DURATION:
+                    print('\n⏱️ Durée de test écoulée.')
+                    return
+                if score < WAKE_THRESHOLD or now < refractory:
+                    continue
+                oww.reset()
+                print('   ⏳ Vérification…')
+                post = []
+                for _ in range(4):             # ~320 ms de queue
+                    try: post.append(next(fit))
+                    except StopIteration: break
+                if wake_confirm(list(ring) + post):
+                    _play_beep('ok')           # bip joué AVANT respawn : jamais capté
+                    ms.respawn()               # tampon neuf, zéro frame périmée
+                    ring.clear()
+                    print("   🎧 Je t'écoute…")
+                    cmd_path = capture_command(ms.frames(), skip_frames=4)
+                    if not cmd_path:
+                        _play_beep('ko'); print('   (aucune commande entendue)')
+                        refractory = time.time() + 1.0
+                    elif handle_command(cmd_path) is False:
+                        return
+                    else:
+                        ms.respawn()           # TTS terminé -> tampon propre
+                else:
+                    _play_beep('ko')
+                    ms.respawn()
+                    refractory = time.time() + 2.0
+                break
+            else:                              # flux micro mort sans déclencheur
+                print('   ⚠️ Flux micro coupé — relance.')
+                time.sleep(0.5)
+                ms.respawn()
+    except KeyboardInterrupt:
+        print('\n👋')
+    finally:
+        ms.close()
 
 # === WHITELIST ===
 READ_COMMANDS = {
@@ -280,29 +637,6 @@ def handle_system_info(args):
     return '\n'.join(parts)[:800]
 
 # === UI ===
-class Spinner:
-    def __init__(self):
-        self.frames = list('\u28cb\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f')
-        self.running = False
-        self._thread = None
-    def start(self):
-        self.running = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-    def _spin(self):
-        i, t0 = 0, time.time()
-        while self.running:
-            f = self.frames[i % len(self.frames)]
-            sys.stdout.write(f'\r{f} R\u00e9flexion... {time.time()-t0:.0f}s')
-            sys.stdout.flush()
-            time.sleep(0.1)
-            i += 1
-    def stop(self):
-        if not self.running: return
-        self.running = False
-        if self._thread: self._thread.join()
-        sys.stdout.write('\r' + ' '*30 + '\r')
-        sys.stdout.flush()
 
 # === SYSTEM PROMPT ===
 HOME = os.path.expanduser('~')
@@ -317,8 +651,7 @@ Rules:
 1. CALL a tool or give a final answer. Never say "I will...".
 2. Chain tool calls until the task is DONE.
 3. Never invent data — only report tool results.
-4. Greetings and small talk: reply directly, NO tool.
-4. To find files by name: search_files. To find by extension: run_shell with find -iname.
+4. Greetings/small talk: reply directly, NO tool. To find files: search_files. By extension: find -iname.
 5. For date/time: run_shell date. To open apps: run_shell xdg-open.
 6. To write/edit files: run_shell with tee or sed.
 7. system_info for RAM, disk, CPU stats.
@@ -344,6 +677,16 @@ def trim_messages(msgs):
     return [msgs[0]] + msgs[-(MAX_HISTORY):]
 
 # === AGENT TURN ===
+def _ollama_stream(messages, tools=None):
+    """Stream Ollama chat. Yield (text_delta, tool_calls, done)."""
+    kwargs = dict(model=MODEL, messages=messages, stream=True,
+                  keep_alive='30m', options=CHAT_OPTS, **THINK_KW)
+    if tools is not None:
+        kwargs['tools'] = tools
+    for chunk in ollama.chat(**kwargs):
+        msg = chunk.get('message', {})
+        yield (msg.get('content', ''), msg.get('tool_calls'), chunk.get('done', False))
+
 def agent_turn(messages, show_timer, command_history=None):
     if command_history is None:
         command_history = []
@@ -353,26 +696,27 @@ def agent_turn(messages, show_timer, command_history=None):
 
     while step < max_steps:
         step += 1
-        sp = Spinner()
-        sp.start()
 
+        # --- Stream Ollama : premier token visible en ~1-2s ---
+        text_buf = []
+        tool_calls = None
         try:
-            response = ollama.chat(
-                model=MODEL, messages=messages, stream=False,
-                tools=TOOLS, keep_alive='30m', options=CHAT_OPTS, **THINK_KW
-            )
+            for delta, tc, done in _ollama_stream(messages, tools=TOOLS):
+                if delta:
+                    text_buf.append(delta)
+                    print(delta, end='', flush=True)
+                if tc:
+                    tool_calls = tc
         except Exception as e:
-            sp.stop()
-            print(f'Erreur Ollama: {e}')
+            print(f'\nErreur Ollama: {e}')
             return
-        sp.stop()
+        if text_buf or tool_calls:
+            print()  # newline after stream
 
-        msg = response.get('message', {})
-        text = msg.get('content', '') or ''
-        tool_calls = msg.get('tool_calls', None) or []
+        text = ''.join(text_buf)
         if os.environ.get('AGENT_DEBUG'):
-            print(f"[DBG] step={step} tc={len(tool_calls)} text={len(text)} "
-                  f"eval={response.get('eval_count')} reason={response.get('done_reason')}", file=sys.stderr)
+            tc_count = len(tool_calls) if tool_calls else 0
+            print(f"[DBG] step={step} tc={tc_count} text={len(text)}", file=sys.stderr)
 
         # No tool calls — final response
         if not tool_calls:
@@ -391,49 +735,48 @@ def agent_turn(messages, show_timer, command_history=None):
                 print(f'\U0001f916 {text}{ts}\n')
                 speak(text)
             else:
-                # Empty response — try once more without tools
-                print('  \u26a0\ufe0f Pas de r\u00e9ponse avec outils, retry sans...')
+                # Empty response — retry sans tools pour forcer une réponse texte
+                print('  ⚠️ Pas de réponse avec outils, retry sans...')
                 try:
-                    retry = ollama.chat(
-                        model=MODEL, messages=messages, stream=False,
-                        tools=TOOLS, keep_alive='30m', options=CHAT_OPTS, **THINK_KW
-                    )
-                    rtxt = retry.get('message', {}).get('content', '')
-                    if os.environ.get('AGENT_DEBUG'):
-                        print(f"[DBG] retry tc={len(retry.get('message', {}).get('tool_calls') or [])} "
-                              f"text={len(rtxt)} eval={retry.get('eval_count')} reason={retry.get('done_reason')}", file=sys.stderr)
+                    rbuf = []
+                    tc_retry = None
+                    for delta, tc, done in _ollama_stream(messages, tools=None):
+                        if delta:
+                            rbuf.append(delta)
+                            print(delta, end='', flush=True)
+                        if tc:
+                            tc_retry = tc
+                    if rbuf or tc_retry:
+                        print()
+                    rtxt = ''.join(rbuf)
                     if rtxt.strip():
-                        # Check if retry produced tool-like text
-                        tc_retry = retry.get('message', {}).get('tool_calls', None)
                         if tc_retry:
-                            print(f'  \u2705 Retry a trouv\u00e9 un outil!')
-                            # Process this tool call
+                            print(f'  ✅ Retry a trouvé un outil!')
                             messages.append({'role': 'assistant', 'content': rtxt, 'tool_calls': tc_retry})
                             tc0 = tc_retry[0]
                             fn = tc0.get('function', {})
                             fn_name = fn.get('name', '')
                             args = fn.get('arguments', {})
-                            # Handle it (simplified — just run_shell and search)
                             if fn_name == 'search_files':
                                 out = handle_search_files(args)
-                                print(f'\U0001f50d {out}')
+                                print(f'🔍 {out}')
                                 messages.append({'role': 'tool', 'content': out})
                                 continue
                             elif fn_name == 'run_shell':
                                 out = run_command(args.get('command', ''))
-                                print(f'\U0001f4cb {out}')
+                                print(f'📋 {out}')
                                 messages.append({'role': 'tool', 'content': out})
                                 continue
                         else:
                             elapsed2 = time.time() - total_t0
-                            ts2 = f'  \u23f1\ufe0f {elapsed2:.1f}s' if show_timer else ''
-                            print(f'\U0001f916 {rtxt}{ts2}\n')
+                            ts2 = f'  ⏱️ {elapsed2:.1f}s' if show_timer else ''
+                            print(f'🤖 {rtxt}{ts2}\n')
                             speak(rtxt)
                     else:
-                        print(f'\U0001f916 D\u00e9sol\u00e9, je n\'ai pas pu r\u00e9pondre. Reformulez ou "reset".{ts}\n')
-                        speak('D\u00e9sol\u00e9, je n\'ai pas pu r\u00e9pondre.')
+                        print(f'🤖 Désolé, je n\'ai pas pu répondre. Reformulez ou "reset".{ts}\n')
+                        speak('Désolé, je n\'ai pas pu répondre.')
                 except:
-                    print(f'\U0001f916 Erreur. Tapez "reset".{ts}\n')
+                    print(f'🤖 Erreur. Tapez "reset".{ts}\n')
 
             messages.append({'role': 'assistant', 'content': text})
             log_event('resp', text[:300])
@@ -516,13 +859,28 @@ def agent_turn(messages, show_timer, command_history=None):
 
 # === MAIN ===
 def main():
-    global VOICE, VOICE_LANG
+    global VOICE, VOICE_LANG, WAKE
     show_timer = '--timer' in sys.argv or '-t' in sys.argv
     VOICE = '--voice' in sys.argv or '-v' in sys.argv
+    WAKE = '--wake' in sys.argv or os.environ.get('MATATA_WAKE') == '1'
+    if WAKE:
+        VOICE = True
     if VOICE and not (os.path.exists(WHISPER_BIN) and os.path.exists(PIPER_MODEL)):
         print('\u26a0\ufe0f  Voix indisponible : whisper.cpp ou Piper manquant dans voice/ \u2014 mode texte seul.')
         VOICE = False
+    if WAKE:
+        if not (VOICE and os.path.exists(WAKE_MODEL_PATH)):
+            print(f'\u26a0\ufe0f  Mode wake impossible : mod\u00e8le {WAKE_MODEL_PATH} manquant ou voix indisponible.')
+            return
     messages = [{'role': 'system', 'content': SYSTEM}]
+
+    # Whisper-server persistant : pas de rechargement du modèle par passe
+    if VOICE:
+        print('   ⏳ Démarrage whisper-server...', end=' ', flush=True)
+        if _whisper_server_start():
+            print(f'✅ (port {_WHISPER_SERVER_PORT})')
+        else:
+            print('⚠️ fallback CLI')
 
     # Warm up
     try:
@@ -530,14 +888,23 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v11 \u2014 {MODEL}' + ('  \U0001f3a4 voix' if VOICE else ''))
+    print(f'\n\U0001f916 Agent PC v12.4 \u2014 {MODEL}' +
+          ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')
-    if VOICE:
+    if WAKE:
+        pass  # instructions affichées par hands_free_loop
+    elif VOICE:
         print('   \U0001f3a4 Entr\u00e9e=parle | tape ton texte au prompt micro | langue fr|en|auto')
     print()
 
-    while True:
+    if WAKE:
+        hands_free_loop(messages, show_timer)
+        _whisper_server_stop()
+        return
+
+    try:
+      while True:
         try:
             if VOICE:
                 typed = input('\U0001f3a4 [Entr\u00e9e=parle | tape ton texte] ')
@@ -581,6 +948,8 @@ def main():
         messages = trim_messages(messages)
         log_event('user', inp)
         agent_turn(messages, show_timer)
+    finally:
+      _whisper_server_stop()
 
 if __name__ == '__main__':
     main()

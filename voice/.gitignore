@@ -2,5 +2,9 @@ whisper.cpp/
 build/
 models/*.bin
 models/*.onnx
-models/*.json.tmp
 *.wav
+clips/
+clips_val/
+training/*.wav
+training/_ref_*.ipynb
+*.raw

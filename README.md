@@ -2,7 +2,7 @@
 
 ## Description
 
-**MATATA** est un écosystème IA local pour Ubuntu, **100% offline**, basé sur **Qwen3 8B** via **Ollama**. C'est une approche minimaliste et pure Python (zéro framework) pour créer un assistant intelligent capable d'exécuter des commandes shell, chercher des fichiers, et rapporter des infos système.
+**MATATA** est un écosystème IA local pour Ubuntu, **100% offline**, basé sur **Qwen3 8B** via **Ollama**. C'est une approche minimaliste et pure Python (zéro framework) pour créer un assistant intelligent capable d'exécuter des commandes shell, chercher des fichiers, rapporter des infos système, et interagir par la voix (STT/TTS + wake word "MATATA").
 
 ### Caractéristiques
 
@@ -12,12 +12,14 @@
 - ✅ **Multi-langue** — Français par défaut, extensible
 - ✅ **Safety-first** — Whitelist stricte pour les commandes shell
 - ✅ **Logs & backups** — Historique complet, backups auto avant modifs
+- ✅ **Voix** — Push-to-talk + wake word "MATATA" mains libres
+- ✅ **Streaming** — Premier token visible en ~1-2s (stream=True)
 
 ---
 
 ## État Actuel
 
-🟢 **Phase 1 TERMINÉE** — Agent PC stable
+🟢 **Phase 1 + Phase 2 TERMINÉES** — Agent PC stable, Voice + Wake Word opérationnels
 
 ---
 
@@ -36,16 +38,17 @@ Fixes appliqués:
 - Bug 3: Truncate output (évite les hallucinations)
 - Few-shot examples (aide le modèle avec des patterns)
 
-### Phase 2: Voice ✅ FAIT (v11)
-**STT avec Whisper + TTS avec Piper — 100% local**
+### Phase 2: Voice ✅ FAIT (v12.4)
+**STT + TTS + Wake Word — 100% local**
 
 - `python3 agent-pc/agent.py --voice` : push-to-talk (Entrée → parle → Entrée)
-- STT : whisper.cpp small (~466 Mo, CPU, double passe FR/EN avec vote de confiance en auto)
-- TTS : Piper bilingue — fr_FR-siwis (français) + en_US-lessac (anglais), streaming vers aplay
-- Langues : auto-détection par défaut, `langue fr|en|auto` en session
-  (mode `fr` = traduction instantanée EN→FR de la parole)
+- `python3 agent-pc/agent.py --wake` : mains libres avec mot-clé "MATATA"
+- STT : whisper.cpp small (~466 Mo) — whisper-server persistant (modèle chargé 1×, fallback CLI)
+- TTS : Piper Python API in-process — bilingue fr_FR-siwis + en_US-lessac, lazy-load (1,1s), synthèse 0,1s
+- LLM : stream=True — premier token visible en ~1-2s (plus d'attente muette)
+- Wake word : openwakeword (matata.onnx R3) + confirmation whisper — double barrière anti-faux positifs
+- Langues : français par défaut, `langue fr|en|auto` en session
 - Réponses dans la langue de l'utilisateur, lues avec la voix correspondante
-- Le texte tapé au prompt micro fonctionne aussi (fallback clavier)
 
 ### Phase 3: MATATA Core 🔮 À VENIR
 **Orchestrateur qui connecte Voice + Agent PC**
@@ -121,14 +124,16 @@ MATATA_MODEL=qwen3.5:4b python agent-pc/agent.py --timer
 
 ```
 MATATA/
-├── agent-pc/               # Phase 1: Agent PC
-│   ├── agent.py            # Main agent (tool calling + loop)
+├── agent-pc/               # Phase 1: Agent PC + Phase 2: Voice
+│   ├── agent.py            # Main agent (tool calling + voice + wake, ~950 lines)
 │   ├── CLAUDE.md           # Architecture & constraints
 │   ├── requirements.txt     # Dependencies (ollama)
 │   ├── test_fixes.py        # Unit tests
 │   └── tests.sh            # Integration test suite
-├── voice/                    # Phase 2: Voice — whisper.cpp (build local, gitignored)
-│   └── models/               # ggml-small.bin + siwis onnx (gitignored, config json versionné)
+├── voice/                    # Voice models & training
+│   ├── models/               # ggml-small.bin + piper onnx + matata.onnx (gitignored)
+│   ├── training/             # Colab notebooks R1→R3 (committed)
+│   └── whisper.cpp/          # whisper.cpp build (gitignored)
 ├── core/                   # Phase 3: MATATA Core (placeholder)
 ├── cloud/                  # Phase 4: Cloud Mentor (placeholder)
 ├── mcp/                    # Phase 5: MCP Tools (placeholder)
@@ -161,7 +166,9 @@ MATATA/
 
 ```bash
 source venv/bin/activate
-python agent-pc/agent.py --timer
+python agent-pc/agent.py --timer        # texte seul
+python agent-pc/agent.py --voice        # push-to-talk
+python agent-pc/agent.py --wake         # mains libres (mot-clé MATATA)
 ```
 
 ### Lancer les tests
@@ -230,7 +237,7 @@ Avant `sed -i`, `tee >`, etc., backup auto à `~/.agent-pc-backups/`
 ## Roadmap
 
 - [x] Optimiser inference ✅ (iGPU Vulkan : ×2 à ×10 selon requête)
-- [ ] Phase 2: Voice (STT + TTS)
+- [x] Phase 2: Voice ✅ (STT + TTS + Wake Word, v12.4)
 - [ ] Phase 3: MATATA Core (orchestrateur)
 - [ ] Phase 4: Cloud Mentor (Groq fallback) ⚠️ conflit avec la contrainte ZERO-cloud — décision pending
 - [ ] Phase 5: MCP Tools (serveur)
@@ -269,12 +276,12 @@ Créé comme projet personnel d'IA accessible et offline-first pour Ubuntu.
 ## Notes
 
 - **100% Offline**: Aucun appel API, tout exécuté localement
-- **Minimaliste**: ~400 lignes Python, zéro frameworks lourds
+- **Minimaliste**: ~950 lignes Python, zéro frameworks lourds
 - **Educational**: Code limpide, idéal pour apprendre tool calling & Ollama
 - **Production-ready**: Logs, backups, safety guardrails
 
 ---
 
-**Version**: 1.1.0 (Phase 1 + iGPU)  
-**Last Updated**: 2026-08-22  
+**Version**: 2.0.0 (Phase 1 + Phase 2 Voice)  
+**Last Updated**: 2026-08-26  
 **Status**: Stable ✅
