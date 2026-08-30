@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.4 — 3 tools + voix push-to-talk + mains libres (--wake)"""
+"""Agent PC v12.5 — 3 tools + voix push-to-talk + mains libres (--wake)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
 import urllib.request, io, uuid, wave
@@ -21,14 +21,26 @@ if not IS_Q35:
 VOICE = False
 VOICE_LANG = 'fr'  # fr | auto | en — 'fr' = direct, 'auto' = double passe fr+en (pour les code-switchers)
 _VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'voice')
-WHISPER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-cli')
+_WCPP = os.path.join(_VOICE_DIR, 'whisper.cpp')
+
+def _pick_bin(rel, build_dirs=('build-vulkan', 'build')):
+    """Sélectionne le binaire whisper par ordre de préférence (Vulkan d'abord).
+    Chaque binaire (cli/server) est choisi indépendamment : si un seul build existe
+    ou est valide, l'autre retombe sur le build CPU sans bloquer."""
+    for d in build_dirs:
+        p = os.path.join(_WCPP, d, 'bin', rel)
+        if os.path.exists(p):
+            return p
+    return os.path.join(_WCPP, 'build', 'bin', rel)  # fallback ultime
+
+WHISPER_BIN = _pick_bin('whisper-cli')
 WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
 VOICE_MODELS = {
     'fr': os.path.join(_VOICE_DIR, 'models', 'fr_FR-siwis-medium.onnx'),
     'en': os.path.join(_VOICE_DIR, 'models', 'en_US-lessac-medium.onnx'),
 }
 PIPER_MODEL = VOICE_MODELS['fr']
-_WHISPER_SERVER_BIN = os.path.join(_VOICE_DIR, 'whisper.cpp', 'build', 'bin', 'whisper-server')
+_WHISPER_SERVER_BIN = _pick_bin('whisper-server')
 _WHISPER_SERVER_PORT = int(os.environ.get('MATATA_WHISPER_PORT', '18080'))
 _WHISPER_SERVER_URL = f'http://127.0.0.1:{_WHISPER_SERVER_PORT}/inference'
 _whisper_server_proc = None
@@ -52,7 +64,7 @@ def _whisper_server_start():
         _whisper_server_proc = subprocess.Popen(
             [_WHISPER_SERVER_BIN, '-m', WHISPER_MODEL, '--port', str(_WHISPER_SERVER_PORT),
              '-t', '4', '--no-speech-thold', '0.6', '--no-language-probabilities',
-             '--ctx', '0'],
+             '--audio-ctx', '0'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Attente du chargement du modèle (~3-5s la première fois)
         for _ in range(15):
@@ -363,7 +375,6 @@ def capture_command(stream, start_timeout=6.0, skip_frames=0):
 def hands_free_loop(messages, show_timer):
     global VOICE_LANG
     import numpy as np
-    import array
     from openwakeword.model import Model
     if os.environ.get('MATATA_WAKE_LANG', 'fr') != 'auto':
         VOICE_LANG = 'fr'      # single-pass : ~-3-4 s par commande (auto = double passe)
@@ -767,6 +778,11 @@ def agent_turn(messages, show_timer, command_history=None):
                                 print(f'📋 {out}')
                                 messages.append({'role': 'tool', 'content': out})
                                 continue
+                            elif fn_name == 'system_info':
+                                out = handle_system_info(args)
+                                print(f'📊 {out}')
+                                messages.append({'role': 'tool', 'content': out})
+                                continue
                         else:
                             elapsed2 = time.time() - total_t0
                             ts2 = f'  ⏱️ {elapsed2:.1f}s' if show_timer else ''
@@ -888,7 +904,7 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v12.4 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.5 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')

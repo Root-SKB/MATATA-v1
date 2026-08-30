@@ -13,7 +13,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
 - Safety: command whitelist (READ auto-execute, WRITE ask confirmation, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (single file, current version: v12.4)
+- agent.py — Main agent script (single file, current version: v12.5)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -26,7 +26,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
 
-## Current Version: v12.4 (Vague 2 optimizations)
+## Current Version: v12.5 (Whisper STT Vulkan)
 3 tools: run_shell, search_files, system_info
 - v10.1: Bug 1 (dedup sliding window of 5) + Bug 2 (200-char cap) fixed
 - v10.2: Bug 3 fixed — output caps 600 (shell/search) / 800 (system_info)
@@ -50,11 +50,21 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
 - v12.4 Vague 2: stream=True Ollama (premier token en ~1-2s au lieu de ~15s d'attente),
   whisper-server persistant (modèle chargé 1×, ~1s/passe économisées), Piper Python API
   in-process (1,1s lazy-load, 0,1s synth, zéro subprocess piper), Spinner supprimé
+- v12.5: Whisper STT sur iGPU Vulkan (build-vulkan/), bascule _pick_bin par binaire avec
+  fallback CPU indépendant (cli/server); retry sans tools gère system_info; nettoyage
+  import array mort. Bench 2026-08-30: ~0.94s/passe sur clip 12s vs 4.24s (CPU+spawn), ~4.5×.
 
 ## VOICE MODE (v12)
 - Binaries/models live in ../voice/ (GITIGNORED — rebuild steps below).
   whisper.cpp: git clone https://github.com/ggml-org/whisper.cpp voice/whisper.cpp &&
-  cmake -B build -DGGML_NATIVE=ON && cmake --build build -j  (bin at build/bin/whisper-cli).
+  cmake -B build -DGGML_NATIVE=ON && cmake --build build -j  (bin at build/bin/whisper-cli,
+  backend CPU).
+  **Vulkan (v12.5)** : cmake -B build-vulkan -DGGML_VULKAN=1 -DGGML_NATIVE=ON
+  -DCMAKE_BUILD_TYPE=Release && cmake --build build-vulkan -j (bin at build-vulkan/bin/,
+  utilise l'iGPU Arc MTL via mesa Vulkan, backend Vulkan0). Dépendances requises :
+  libvulkan-dev, glslc, libshaderc1, spirv-headers. `build-vulkan/` est gitignoré.
+  agent.py choisit par binaire (Vulkan d'abord, fallback CPU) via _pick_bin() — cli et
+  server sélectionnés indépendamment.
   Models in voice/models/: ggml-small.bin (~466MB, HF ggerganov/whisper.cpp);
   Piper voices fr_FR-siwis-medium + en_US-lessac-medium (~61MB each,
   HF rhasspy/piper-voices). Voice config jsons ARE committed (5KB each).
@@ -64,7 +74,9 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   VOICE_LANG='fr' par défaut, 'auto' = dual decode fr+en passes, winner by mean token 'p';
   native initial prompt per pass; rule 10 replies in user's language; bilingual TTS
   — speak() picks siwis or en_US-lessac via accent+stopword heuristic (_voice_for).
-- Timings measured: single STT pass ~3.6s per 12s clip; auto = ~6-7s both passes;
+- Timings measured: single STT pass ~3.6s per 12s clip (CPU + spawn); auto = ~6-7s.
+  **Vulkan + server persistant (v12.5)**: ~0.94s/passe sur clip 12s (mesuré 2026-08-30),
+  ~4.5× plus rapide — combine GPU Vulkan + suppression du spawn/load du serveur chaud.
   TTS ~1.3s synth start (FR) / 4.2s full EN sentence playback; full vocal turn
   ≈ model time + ~7s overhead. User reported faster than typing.
 - Mic: Intel DMIC array, gain 80% (-10dB). Speak ~30cm away; short phrases may
@@ -213,8 +225,3 @@ Stability criterion before major work: 3 consecutive green runs (default model) 
 - Videos: ~/Videos/Film/Series/
 - Music: ~/Music/ (nearly empty)
 - Backups & session logs: ~/.agent-pc-backups/
-
-## ROADMAP CONTEXT (from README.md)
-Phase 1 Agent PC ✅ — Phase 2 Voice (Whisper STT + Piper TTS, push-to-talk) ← next
-Phase 3 MATATA Core orchestrator — Phase 4 Cloud Mentor (⚠ conflicts ZERO-cloud, pending decision)
-Phase 5 MCP Tools server

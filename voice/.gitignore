@@ -1,5 +1,6 @@
 whisper.cpp/
 build/
+build-vulkan/
 models/*.bin
 models/*.onnx
 *.wav
