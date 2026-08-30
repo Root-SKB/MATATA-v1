@@ -52,7 +52,10 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   in-process (1,1s lazy-load, 0,1s synth, zéro subprocess piper), Spinner supprimé
 - v12.5: Whisper STT sur iGPU Vulkan (build-vulkan/), bascule _pick_bin par binaire avec
   fallback CPU indépendant (cli/server); retry sans tools gère system_info; nettoyage
-  import array mort. Bench 2026-08-30: ~0.94s/passe sur clip 12s vs 4.24s (CPU+spawn), ~4.5×.
+  import array mort; fix whisper-server --audio-ctx (crashait sur --ctx invalide, server
+  jamais utilisé). Bench 2026-08-30: ~0.94s/passe sur clip 12s vs 4.24s (CPU+spawn), ~4.5×.
+  **repeat_penalty retiré** (1.0 == 1.2 en fiabilité, zéro vide/early-EOS sur basiques +
+  multi-step; le penalty avait été mis pour éviter ~60% early-EOS, plus nécessaire).
 
 ## VOICE MODE (v12)
 - Binaries/models live in ../voice/ (GITIGNORED — rebuild steps below).
@@ -154,8 +157,9 @@ inference) resolved in practice by iGPU offload — no longer tracked as a bug.
   * qwen3.5: default hybrid thinking eats the whole num_predict budget → empty answers.
     The inline '/no_think' switch does NOT work through Ollama.
 - CHAT_OPTS = {'num_predict': 800, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
-  * repeat_penalty=1.5 ONLY for qwen3:8b (official Qwen3 rec for quants).
-    It BREAKS qwen3.5:4b tool calling (empty outputs).
+  * repeat_penalty RETIRÉ (v12.5, bench 2026-08-30: 1.0 == 1.2 en fiabilité, zéro réponse
+    vide/early-EOS sur basiques + multi-step). Le 1.2 avait été mis pour contrebalancer
+    ~60% early-EOS de la rec officielle 1.5, plus nécessaire. tout penalty casse qwen3.5.
 - keep_alive='30m' on chat calls (model stays resident between turns)
 - stream=True (v12.4): premier token visible en ~1-2s au lieu de ~15s d'attente complète
 - VOICE_LANG = 'fr' by default (v12.3): single-pass STT; 'auto' available via env MATATA_WAKE_LANG=auto

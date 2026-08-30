@@ -10,12 +10,11 @@ from datetime import datetime
 MODEL = os.environ.get('MATATA_MODEL', 'qwen3:8b')
 # think=False required for BOTH generations: qwen3 (issue #10976) and qwen3.5
 # (default hybrid thinking eats the whole num_predict budget -> empty answers).
-IS_Q35 = MODEL.startswith('qwen3.5')
 THINK_KW = {'think': False}
 CHAT_OPTS = {'num_predict': 800, 'num_ctx': 4096, 'temperature': 0.3, 'num_thread': 16}
-if not IS_Q35:
-    CHAT_OPTS['repeat_penalty'] = 1.2  # official Qwen3 rec is 1.5 but it causes early-EOS empty
-    # responses after failed tool attempts; 1.2 keeps tool calling reliable (validated v9.2 era)
+# repeat_penalty retiré (bench 2026-08-30 v12.5: 1.0 == 1.2 en fiabilité sur basiques +
+# multi-step, zéro réponse vide/early-EOS; 1.2 historiquement pour éviter ~60% early-EOS
+# après échec de tool, plus nécessaire). repeat_penalty inutilisé pour qwen3.5 (le casse).
 
 # === VOICE (Phase 2 — optional --voice flag) ===
 VOICE = False
