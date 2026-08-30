@@ -550,11 +550,11 @@ TOOLS = [
         'type': 'function',
         'function': {
             'name': 'system_info',
-            'description': 'PC stats: RAM, disk, CPU, OS, top processes.',
+            'description': 'PC stats: RAM, disk, CPU, OS, top processes. Use category="all" (default) when the user asks for multiple stats (e.g. "RAM et disque") to return RAM + disk + CPU together.',
             'parameters': {
                 'type': 'object',
                 'properties': {
-                    'category': {'type': 'string', 'description': 'all|ram|disk|cpu|os|top_processes'}
+                    'category': {'type': 'string', 'description': 'all|ram|disk|cpu|os|top_processes. all returns RAM+DISK+CPU (default).'}
                 },
                 'required': []
             }
