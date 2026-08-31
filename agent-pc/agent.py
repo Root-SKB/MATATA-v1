@@ -669,9 +669,10 @@ Rules:
 9. Never delete (rm/rmdir). Say "interdit".
 10. Reply in the user's language (French if they write French, English if they write English), concise.
 11. If a command fails, NEVER redo it with cosmetic changes (different binary path, flags). Run ls on the parent dir to see real names, then adapt.
+12. AUDIO vs VIDEO: "musique/audio" = ONLY audio extensions (mp3, wav, flac, ogg, m4a, aac). NEVER mp4/mkv/webm/avi for music. Séries/vidéos = mkv, mp4, webm, avi. Match the extension to what is asked.
 
 Examples of good simple commands:
-- "combien de musique" → run_shell: find ~/Music -type f | wc -l
+- "combien de musique" → run_shell: find ~/Music -type f \\( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' -o -iname '*.ogg' \\) | wc -l   (AUDIO only, NEVER mp4/mkv)
 - "taille dossier Videos" → run_shell: du -sh ~/Videos
 - "chercher fichiers python" → run_shell: find ~ -name "*.py" -type f | head -20"""
 
