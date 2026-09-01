@@ -125,7 +125,7 @@ MATATA_MODEL=qwen3.5:4b python agent-pc/agent.py --timer
 ```
 MATATA/
 ├── agent-pc/               # Phase 1: Agent PC + Phase 2: Voice
-│   ├── agent.py            # Main agent (tool calling + voice + wake, ~950 lines)
+│   ├── agent.py            # Main agent (tool calling + voice + wake, ~1010 lines)
 │   ├── CLAUDE.md           # Architecture & constraints
 │   ├── requirements.txt     # Dependencies (ollama)
 │   ├── test_fixes.py        # Unit tests
@@ -207,8 +207,10 @@ mkdir, cp, mv, touch, tee, chmod, chown, apt, pip, echo, sed
 
 ### BLOCKED (jamais)
 ```
-rm, rmdir, shred, dd, mkfs, reboot, shutdown, poweroff, killall
+rm, rmdir, shred, unlink, dd, mkfs, wipefs, fdisk, parted, kill, killall,
+reboot, shutdown, poweroff, halt, init
 ```
+(v12.5: détection aussi via -exec / xargs / sh -c / system() / systemctl reboot,poweroff,halt,kill,stop — ex. `find -exec rm` → bloqué)
 
 ### Auto-backup avant modifs
 Avant `sed -i`, `tee >`, etc., backup auto à `~/.agent-pc-backups/`
@@ -276,12 +278,12 @@ Créé comme projet personnel d'IA accessible et offline-first pour Ubuntu.
 ## Notes
 
 - **100% Offline**: Aucun appel API, tout exécuté localement
-- **Minimaliste**: ~950 lignes Python, zéro frameworks lourds
+- **Minimaliste**: ~1010 lignes Python, zéro frameworks lourds
 - **Educational**: Code limpide, idéal pour apprendre tool calling & Ollama
 - **Production-ready**: Logs, backups, safety guardrails
 
 ---
 
-**Version**: 2.0.0 (Phase 1 + Phase 2 Voice)  
-**Last Updated**: 2026-08-26  
+**Version**: 2.1.0 (Phase 1 + Phase 2 Voice + Whisper STT Vulkan)
+**Last Updated**: 2026-08-30  
 **Status**: Stable ✅

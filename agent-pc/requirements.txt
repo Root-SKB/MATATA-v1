@@ -1,1 +1,7 @@
+# Cœur (text mode uniquement)
 ollama>=0.6.2,<0.7
+
+# Mode voix (--voice / --wake) — optionnel, import dynamique dans agent.py
+# piper-tts>=1.2.0                # synthèse TTS in-process (PiperVoice)
+# openwakeword>=0.5.2             # détection du mot-clé MATATA (--wake)
+# (client whisper-server = urllib stdlib, aucune dépendance)

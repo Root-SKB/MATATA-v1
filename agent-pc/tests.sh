@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for Agent PC v10 — Bug Fix Verification (Bugs 1 & 2)
+# Integration suite for Agent PC v12.5 (requires Ollama + qwen3:8b pulled)
 
 set -e
 cd "$(dirname "$0")"
@@ -7,10 +7,10 @@ source ../venv/bin/activate
 
 echo ""
 echo "================================"
-echo "Agent PC v10 — Test Suite"
+echo "Agent PC v12.5 — Integration Suite"
 echo "================================"
 echo ""
-echo "Testing: Bug 1 (Command Dedup) + Bug 2 (Command Length Limit)"
+echo "Testing: greeting, date/time, RAM+disk, music count, series+size (multi-step)"
 echo ""
 
 # Test 1: Hi (no tool call)

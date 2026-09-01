@@ -9,8 +9,8 @@ Single-file Python agent (`agent.py`) using Qwen3 8B via Ollama native tool call
 
 | File | Role |
 |------|------|
-| `agent-pc/agent.py` | **Single file agent** (~950 lines, v12.4). All logic here. |
-| `agent-pc/test_fixes.py` | Unit tests for command dedup + length limit (no Ollama needed) |
+| `agent-pc/agent.py` | **Single file agent** (~1010 lines, v12.5). All logic here. |
+| `agent-pc/test_fixes.py` | Unit tests: command dedup + length limit + security classify (no Ollama needed) |
 | `agent-pc/tests.sh` | Integration test suite (takes 10-15 min, requires Ollama) |
 | `voice/` | Whisper.cpp + Piper models + wake word model (gitignored binaries, committed config) |
 
@@ -46,9 +46,9 @@ python3 -m py_compile agent-pc/agent.py
 - **Model switching**: `MATATA_MODEL=qwen3.5:4b python3 agent-pc/agent.py` (default `qwen3:8b`). Both validated 5/5. qwen3.5:4b: same think=False, ever-no repeat_penalty (break tool calling); ~equal speed on iGPU but weaker semantics/French. qwen3.5 default hybrid thinking eats num_predict budget if think=False is omitted — `/no_think` inline does NOT work via Ollama.
 - **Ollama config**: `think=False` (think=True + tools = empty output, Ollama issue 10976), `stream=True` (v12.4, premier token en ~1-2s), `temperature=0.3`, `num_predict=800`, `num_ctx=4096`, `keep_alive='30m'`. Runs on **Intel Arc MTL iGPU via Vulkan** (`OLLAMA_IGPU_ENABLE=1` in `/etc/systemd/system/ollama.service.d/igpu.conf`): 100% offload, ~2× faster than CPU-only. Ollama v0.32.15 as systemd service (user `ollama`, models in `/usr/share/ollama/.ollama/models`). `num_thread=16` kept in agent options (applies only if layers fall back to CPU).
 - **Per-generation params**: `repeat_penalty` RETIRÉ pour les deux modèles (v12.5, bench 2026-08-30 : 1.0 == 1.2 en fiabilité sur basiques + multi-step, zéro réponse vide/early-EOS — le 1.2 historique pour éviter ~60% early-EOS après échec de tool n'est plus nécessaire ; et tout repeat_penalty casse le tool calling de qwen3.5). `AGENT_DEBUG=1` env var logs per-step response stats to stderr.
-- **Safety**: READ commands auto-execute, WRITE asks confirmation, BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/etc) never. See whitelist in `agent.py`.
+- **Safety**: READ commands auto-execute, WRITE asks confirmation, BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/`halt`/etc) never. `classify_command` hardened (v12.5): scans every command incl. `find -exec`, `xargs`, `sh -c`, `awk system()`, `systemctl reboot/poweroff/halt/kill/stop`, `nohup`. See whitelist in `agent.py`.
 - **Auto-backup**: Before write operations on existing files, saves to `~/.agent-pc-backups/`.
-- **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup, commands capped at 200 chars.
+- **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup (shared across turns via `_COMMAND_HISTORY`), commands capped at 200 chars.
 - **CPU/iGPU**: Vulkan iGPU ≈ 2× CPU speed (Hi 9-14s, complex multi-step 25-45s). Keep tool outputs SHORT — caps: 600 chars (shell/search), 800 (system_info). `system_info(all)` returns only ram+disk+cpu.
 
 ## Voice mode (v12+)
