@@ -487,10 +487,10 @@ READ_COMMANDS = {
     'hostname','which','printenv','env','id','groups','lscpu','lsmem',
     'stat','sensors','neofetch','grep','awk','sort','uniq',
     'dpkg','snap','flatpak','systemctl','tree','locate','type',
-    'lsusb','lspci','journalctl','xdg-open','nohup'
+    'lsusb','lspci','journalctl','xdg-open'
 }
-WRITE_COMMANDS = {'mkdir','cp','mv','touch','tee','chmod','chown','apt','pip','nano','vim','echo','sed'}
-BLOCKED_COMMANDS = {'rm','rmdir','shred','unlink','dd','mkfs','wipefs','fdisk','parted','kill','killall','reboot','shutdown','poweroff','init'}
+WRITE_COMMANDS = {'mkdir','cp','mv','touch','tee','chmod','chown','apt','pip','nano','vim','echo','sed','nohup'}
+BLOCKED_COMMANDS = {'rm','rmdir','shred','unlink','dd','mkfs','wipefs','fdisk','parted','kill','killall','reboot','shutdown','poweroff','halt','init'}
 
 # === BACKUP (Python-side, invisible to model) ===
 BACKUP_DIR = os.path.join(os.path.expanduser('~'), '.agent-pc-backups')
@@ -563,8 +563,38 @@ TOOLS = [
 ]
 
 # === HELPERS ===
+# Détecte des commandes destructrices n'importe où dans la chaîne (pas seulement
+# en tête) quand elles portent un flag/signe agissant (ça ne matche pas une simple
+# mention du mot). reboot/shutdown/poweroff/halt sont couverts par 'base' (en tête)
+# et par _EXEC_DANGER (via pipe/exec) — pas ici pour éviter les faux positifs
+# ("echo ... reboot ...").
+_DANGER_RE = re.compile(
+    r'\b(rm\s+-[^;|&]*[rf]|rmdir\b|shred\b|unlink\b|dd\b|mkfs\b|wipefs\b|fdisk\b|parted\b|killall\b|init\s+[0-6])\b',
+    re.IGNORECASE)
+# Commande destructrice appelée NUE via -exec / xargs / sh -c / system()
+# (ex. "find ... -exec rm {} ;", "find ... | xargs -0 rm", "sh -c 'dd ...'").
+# 'rm/dd/...' sans flag est couvert ici (uniquement après un préfixe de passage).
+_EXEC_DANGER = re.compile(
+    r'(?:-exec\s+|xargs\s+(?:-[0-9a-z]+\s+)*|sh\s+-c\s*[\'"“]|system\s*\([\'"“]|[\|;&]\s*|^\s*|&&\s*)'
+    r'(?:sudo\s+)?(rm|rmdir|shred|unlink|dd|mkfs|wipefs|fdisk|parted|reboot|shutdown|poweroff|halt|kill|killall)\b',
+    re.IGNORECASE)
+# systemctl DOESN'T auto-destruct : seules certaines actions sont dangereuses
+_SYSTEMCTL_BAD = re.compile(
+    r'systemctl\s+(reboot|poweroff|halt|kill|stop|suspend|hibernate|force|off|on)',
+    re.IGNORECASE)
+
 def classify_command(cmd_str):
-    if re.search(r'(sudo\s+rm|rm\s+-rf|:\(\)\{)', cmd_str):
+    # 1) Détection globale des commandes/blocs destructeurs via regex sur tout le texte
+    if re.search(r'(sudo\s+rm|rm\s+-rf|rm\s+-r\s+-f|:\(\)\{)', cmd_str):
+        return 'blocked'
+    # rm -f / rm -r ou bloc étape reste bloqué
+    if _DANGER_RE.search(cmd_str):
+        return 'blocked'
+    # commande destructive appelée nue via -exec/xargs/sh -c/system()
+    if _EXEC_DANGER.search(cmd_str):
+        return 'blocked'
+    # 2) systemctl avec une action de contrôle du système => bloquée
+    if _SYSTEMCTL_BAD.search(cmd_str):
         return 'blocked'
     try:
         base = shlex.split(cmd_str)[0].split('/')[-1]

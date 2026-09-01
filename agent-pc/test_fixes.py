@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Quick test for Bug 1 & 2 fixes (without Ollama)"""
+"""Quick test for Bug 1 & 2 fixes + security classify (without Ollama)"""
 
-import sys
-sys.path.insert(0, '/home/root-dev/dev/personal/agent-pc')
+import sys, os
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import agent
 
 # Simulate the dedup + length limit logic
 def test_command_fixes():
@@ -43,6 +45,60 @@ def test_command_fixes():
     print("\n📊 All fixes validated!")
     return True
 
+
+def test_security_classify():
+    """Vérifie que classify_command bloque les commandes destructrices
+    (y compris via contournement) et laisse passer les légitimes."""
+    c = agent.classify_command
+    blocked_expected = [
+        "rm -rf /",
+        "rm -r /home/x",
+        "rm -f file.txt",
+        "rm file",
+        "find / -exec rm {} ;",
+        "find ~ -type f -exec shred {} ;",
+        "find ~ -type f -print0 | xargs -0 rm",
+        "xargs rm < list",
+        "sh -c 'dd if=/dev/sda of=/dev/null'",
+        "dd if=/dev/zero of=/dev/sda",
+        "mkfs.ext4 /dev/sdb1",
+        "shred -u file",
+        "reboot", "poweroff", "halt",
+        "kill 1234", "killall firefox",
+        "echo x | reboot",
+        "systemctl reboot", "systemctl poweroff", "systemctl stop nginx",
+        "ls /tmp && rm -rf /tmp/x",
+    ]
+    read_expected = [
+        "ls -la ~/Music",
+        "find ~/Music -type f | wc -l",
+        "find ~ -name '*.mp3' | wc -l",
+        "du -sh ~/Videos",
+        "date",
+        "cat /etc/hostname",
+        "systemctl status nginx",
+        "systemctl is-active ollama",
+        "systemctl list-units",
+        "grep -v rm /etc/test",
+        "grep rm file",
+        "free -h", "df -h /", "whoami", "uname -a", "ps aux",
+    ]
+    fails = 0
+    for cmd in blocked_expected:
+        r = c(cmd)
+        if r != 'blocked':
+            print(f"❌ SECURITY: {cmd!r} -> {r} (attendu blocked)"); fails += 1
+    for cmd in read_expected:
+        r = c(cmd)
+        if r != 'read':
+            print(f"❌ SECURITY: {cmd!r} -> {r} (attendu read)"); fails += 1
+    if fails:
+        print(f"\n❌ {fails} échec(s) de sécurité"); return False
+    print(f"✅ SECURITY: {len(blocked_expected)} destructrices bloquées + {len(read_expected)} légitimes OK")
+    return True
+
+
 if __name__ == '__main__':
-    success = test_command_fixes()
-    sys.exit(0 if success else 1)
+    ok1 = test_command_fixes()
+    ok2 = test_security_classify()
+    sys.exit(0 if (ok1 and ok2) else 1)
