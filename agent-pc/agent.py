@@ -412,7 +412,7 @@ def hands_free_loop(messages, show_timer):
         messages.append({'role': 'user', 'content': inp})
         messages[:] = trim_messages(messages)
         log_event('user', inp)
-        agent_turn(messages, show_timer)
+        agent_turn(messages, show_timer, _COMMAND_HISTORY)
         print()
         actif_until = time.time() + ACTIF_S     # la conversation reste ouverte
         refractory = time.time() + 1.5
@@ -708,6 +708,11 @@ Examples of good simple commands:
 
 MAX_HISTORY = 20
 
+# Déduplication (BUG FIX 1) : historique partagé sur TOUTE la session pour que
+# la fenêtre glissante de 5 fonctionne réellement entre les tours (pas seulement
+# à l'intérieur d'un seul agent_turn).
+_COMMAND_HISTORY = []
+
 INCOMPLETE_PATTERNS = re.compile(
     r'(je vais |I will |let me |I\'ll |I am going to |voulez-vous |souhaitez-vous |désirez-vous )',
     re.IGNORECASE
@@ -993,7 +998,7 @@ def main():
         messages.append({'role':'user','content':inp})
         messages = trim_messages(messages)
         log_event('user', inp)
-        agent_turn(messages, show_timer)
+        agent_turn(messages, show_timer, _COMMAND_HISTORY)
     finally:
       _whisper_server_stop()
 

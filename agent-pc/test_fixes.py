@@ -98,7 +98,43 @@ def test_security_classify():
     return True
 
 
+def test_dedup_integration():
+    """Vérifie que _COMMAND_HISTORY (partagé entre tours) fait réellement le dedup
+    dans agent_turn : la même commande run_shell re-émise au 2e tour est rejetée."""
+    import io, contextlib
+    from unittest import mock
+    SAME_CMD = 'find ~/Music -type f | wc -l'
+    captured = {}
+    def fake_stream(messages, tools=None):
+        captured['tool'] = True
+        # Capte la commande réellement émise pour pouvoir la rejouer identique
+        yield ('', [{'function': {'name': 'run_shell',
+                                  'arguments': {'command': SAME_CMD}}}], True)
+    agent._COMMAND_HISTORY.clear()
+    with mock.patch.object(agent, '_ollama_stream', side_effect=fake_stream):
+        msgs1 = [{'role': 'system', 'content': agent.SYSTEM}, {'role': 'user', 'content': 'musique'}]
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent.agent_turn(msgs1, False, agent._COMMAND_HISTORY)
+        first_ok = 'find ~/Music' in agent._COMMAND_HISTORY[0]
+        # 2e tour : même commande -> rejetée
+        msgs2 = [{'role': 'system', 'content': agent.SYSTEM}, {'role': 'user', 'content': 'musique'}]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            agent.agent_turn(msgs2, False, agent._COMMAND_HISTORY)
+        out2 = buf.getvalue()
+    dedup_ok = 'IDENTIQUE' in out2
+    no_dup = agent._COMMAND_HISTORY.count(SAME_CMD) == 1
+    if not (first_ok and dedup_ok and no_dup):
+        print(f"❌ DEDUP: first_ok={first_ok} rejet={dedup_ok} no_dup={no_dup}")
+        print("   historique:", agent._COMMAND_HISTORY)
+        return False
+    print(f"✅ DEDUP: commande ajoutée au tour 1, rejetée au tour 2 ({len(agent._COMMAND_HISTORY)} entrée(s))")
+    agent._COMMAND_HISTORY.clear()
+    return True
+
+
 if __name__ == '__main__':
     ok1 = test_command_fixes()
     ok2 = test_security_classify()
-    sys.exit(0 if (ok1 and ok2) else 1)
+    ok3 = test_dedup_integration()
+    sys.exit(0 if (ok1 and ok2 and ok3) else 1)
