@@ -519,7 +519,7 @@ TOOLS = [
         'type': 'function',
         'function': {
             'name': 'run_shell',
-            'description': 'Run a shell command. Use for: ls, du, find, cat, grep, date, free, df, sed, tee, xdg-open. One pipe max.',
+            'description': 'Run a shell command. Use for: ls, du, find, cat, grep, date, sed, tee, xdg-open. One pipe max. For RAM/disk stats use system_info, NOT free/df.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -694,15 +694,18 @@ Rules:
 4. Greetings/small talk: reply directly, NO tool. To find files: search_files. By extension: find -iname.
 5. For date/time: run_shell date. To open apps: run_shell xdg-open.
 6. To write/edit files: run_shell with tee or sed.
-7. system_info for RAM, disk, CPU stats.
+7. system_info for RAM, disk, CPU stats. For MULTIPLE stats together (e.g. "RAM et disque", "stats du PC"): ONE system_info call with category="all" (returns RAM+DISK+CPU). Don't call free/df separately.
 8. Keep commands simple. One pipe max.
 9. Never delete (rm/rmdir). Say "interdit".
 10. Reply in the user's language (French if they write French, English if they write English), concise.
 11. If a command fails, NEVER redo it with cosmetic changes (different binary path, flags). Run ls on the parent dir to see real names, then adapt.
 12. AUDIO vs VIDEO: "musique/audio" = ONLY audio extensions (mp3, wav, flac, ogg, m4a, aac). NEVER mp4/mkv/webm/avi for music. Séries/vidéos = mkv, mp4, webm, avi. Match the extension to what is asked.
+13. Only call a tool when you know its exact argument (path, keyword, category). If a path is uncertain, ls the parent dir first.
 
 Examples of good simple commands:
 - "combien de musique" → run_shell: find ~/Music -type f \\( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' -o -iname '*.ogg' \\) | wc -l   (AUDIO only, NEVER mp4/mkv)
+- "RAM et disque" → system_info (category="all")
+- "combien de RAM" → system_info (category="ram")
 - "taille dossier Videos" → run_shell: du -sh ~/Videos
 - "chercher fichiers python" → run_shell: find ~ -name "*.py" -type f | head -20"""
 
@@ -714,7 +717,12 @@ MAX_HISTORY = 20
 _COMMAND_HISTORY = []
 
 INCOMPLETE_PATTERNS = re.compile(
-    r'(je vais |I will |let me |I\'ll |I am going to |voulez-vous |souhaitez-vous |désirez-vous )',
+    r'(je vais (chercher|utiliser|lister|compter|regarder|essayer|taper|lancer|ouvrir|aller)?\s*'
+    r'|je vais\s*'
+    r'|je (suis en train de|vais te|peux vous lister|recherche des fichiers)\s*'
+    r'|I will\s*|let me\s*|I\'ll\s*|I am going to\s*'
+    r'|voulez-vous\s*|souhaitez-vous\s*|désirez-vous\s*'
+    r'|je lance la commande\s*|permettez-moi\s*)',
     re.IGNORECASE
 )
 
