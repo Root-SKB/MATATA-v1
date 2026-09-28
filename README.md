@@ -272,14 +272,6 @@ MIT — Free to use, modify, distribute
 
 ---
 
-## Auteur
-
-**Djimé Sacko** — sacko.djime@kabakoo.africa
-
-Créé comme projet personnel d'IA accessible et offline-first pour Ubuntu.
-
----
-
 ## Notes
 
 - **100% Offline**: Aucun appel API, tout exécuté localement
