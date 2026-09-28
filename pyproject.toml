@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matata"
+version = "12.6.0"
+description = "MATATA — assistant IA local 100% hors-ligne (Ollama + whisper.cpp + Piper)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Seydou Ba", email = "seydoukaouba@gmail.com" },
+]
+dependencies = [
+    "ollama>=0.6.2,<0.7",
+]
+
+[project.optional-dependencies]
+voice = [
+    "piper-tts>=1.2.0",
+    "openwakeword>=0.5.2",
+]
+
+[project.scripts]
+matata = "matata.cli:main"
+
+[tool.setuptools]
+packages = ["matata"]

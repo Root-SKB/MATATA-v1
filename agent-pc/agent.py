@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.5 — 3 tools + voix push-to-talk + mains libres (--wake)"""
+"""Agent PC v12.6 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
 import urllib.request, io, uuid, wave
@@ -60,10 +60,16 @@ def _whisper_server_start():
     if not os.path.exists(_WHISPER_SERVER_BIN):
         return False
     try:
+        # VAD native whisper.cpp (v1.8.4+, on est en v1.9.3-dev) : ~0.94s/passe conservé,
+        # retire les silences avant transcription. Toggle : MATATA_WHISPER_VAD=0 pour désactiver.
+        _whisper_cmd = [_WHISPER_SERVER_BIN, '-m', WHISPER_MODEL,
+                        '--port', str(_WHISPER_SERVER_PORT),
+                        '-t', '4', '--no-speech-thold', '0.6',
+                        '--no-language-probabilities', '--audio-ctx', '0']
+        if os.environ.get('MATATA_WHISPER_VAD', '1') != '0':
+            _whisper_cmd.append('--vad')
         _whisper_server_proc = subprocess.Popen(
-            [_WHISPER_SERVER_BIN, '-m', WHISPER_MODEL, '--port', str(_WHISPER_SERVER_PORT),
-             '-t', '4', '--no-speech-thold', '0.6', '--no-language-probabilities',
-             '--audio-ctx', '0'],
+            _whisper_cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Attente du chargement du modèle (~3-5s la première fois)
         for _ in range(15):
@@ -480,7 +486,11 @@ def hands_free_loop(messages, show_timer):
     finally:
         ms.close()
 
-# === WHITELIST ===
+# === WHITELIST — niveaux N1 (read, auto) / N2 (write, confirm) / N3 (critical, confirm LOCALE) ===
+# Patron N1/N2/N3 inspiré de jarvis-assistant-vocal (sosoj92, confirmé réel — cf. docs/TECH_WATCH.md
+# §7) : N3 = actions plus lourdes que le WRITE ordinaire (permissions, install système, détachement
+# de process) — nécessitent une confirmation FRAÎCHE et LOCALE, jamais satisfaite par une origine
+# distante (même une fois un canal web/mobile branché en Phase 1, cf. IS_REMOTE plus bas).
 READ_COMMANDS = {
     'ls','cat','head','tail','df','free','top','whoami','pwd','find',
     'file','wc','du','uname','lsblk','ip','ss','ps','date','uptime',
@@ -489,8 +499,14 @@ READ_COMMANDS = {
     'dpkg','snap','flatpak','systemctl','tree','locate','type',
     'lsusb','lspci','journalctl','xdg-open'
 }
-WRITE_COMMANDS = {'mkdir','cp','mv','touch','tee','chmod','chown','apt','pip','nano','vim','echo','sed','nohup'}
+WRITE_COMMANDS = {'mkdir','cp','mv','touch','tee','echo','sed'}
+CRITICAL_COMMANDS = {'chmod','chown','apt','pip','nano','vim','nohup'}
 BLOCKED_COMMANDS = {'rm','rmdir','shred','unlink','dd','mkfs','wipefs','fdisk','parted','kill','killall','reboot','shutdown','poweroff','halt','init'}
+
+# IS_REMOTE : False tant qu'aucun canal distant n'existe (agent.py reste 100% local/CLI).
+# Prérequis pour la future Phase 1 web/mobile : le canal distant devra mettre ce flag à True
+# AVANT d'appeler agent_turn, pour que le gate N3 ci-dessous refuse correctement à distance.
+IS_REMOTE = False
 
 # === BACKUP (Python-side, invisible to model) ===
 BACKUP_DIR = os.path.join(os.path.expanduser('~'), '.agent-pc-backups')
@@ -602,6 +618,7 @@ def classify_command(cmd_str):
     if base in BLOCKED_COMMANDS: return 'blocked'
     if re.search(r'[>]', cmd_str) and base in READ_COMMANDS: return 'write'
     if base in READ_COMMANDS: return 'read'
+    if base in CRITICAL_COMMANDS: return 'critical'
     if base in WRITE_COMMANDS: return 'write'
     return 'unknown'
 
@@ -900,8 +917,15 @@ def agent_turn(messages, show_timer, command_history=None):
                 out = run_command(cmd)
                 print(f'\U0001f4c4 {out}')
                 messages.append({'role': 'tool', 'content': out})
+            elif lvl == 'critical' and IS_REMOTE:
+                # N3 : jamais satisfiable \u00e0 distance, m\u00eame avec un canal web/mobile branch\u00e9.
+                print('\U0001f512 N3 critique \u2014 confirmation locale fra\u00eeche requise, refus\u00e9 \u00e0 distance.')
+                messages.append({'role': 'tool', 'content': 'REFUSED: N3 critical action requires a fresh LOCAL confirmation, not available remotely.'})
+                return
             else:
-                ok = input('\u26a0\ufe0f  OK ? (o/n) > ').strip().lower()
+                prompt = '\U0001f512 N3 CRITIQUE \u2014 confirmation locale (o/n) > ' if lvl == 'critical' \
+                    else '\u26a0\ufe0f  OK ? (o/n) > '
+                ok = input(prompt).strip().lower()
                 if ok in ('o','oui','y','yes'):
                     out = run_command(cmd)
                     print(f'\U0001f4c4 {out}')
@@ -947,7 +971,7 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v12.5 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.6 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')

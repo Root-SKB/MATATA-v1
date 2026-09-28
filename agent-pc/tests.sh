@@ -1,5 +1,5 @@
 #!/bin/bash
-# Integration suite for Agent PC v12.5 (requires Ollama + qwen3:8b pulled)
+# Integration suite for Agent PC v12.6 (requires Ollama + qwen3:8b pulled)
 
 set -e
 cd "$(dirname "$0")"
@@ -7,7 +7,7 @@ source ../venv/bin/activate
 
 echo ""
 echo "================================"
-echo "Agent PC v12.5 — Integration Suite"
+echo "Agent PC v12.6 — Integration Suite"
 echo "================================"
 echo ""
 echo "Testing: greeting, date/time, RAM+disk, music count, series+size (multi-step)"

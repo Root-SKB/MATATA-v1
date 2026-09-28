@@ -83,6 +83,15 @@ def test_security_classify():
         "grep rm file",
         "free -h", "df -h /", "whoami", "uname -a", "ps aux",
     ]
+    # N2 : write ordinaire — confirmable localement OU à distance une fois le canal branché.
+    write_expected = [
+        "mkdir ~/test", "cp a.txt b.txt", "mv a.txt b.txt", "touch ~/x",
+        "tee /tmp/out.txt", "echo hi > /tmp/out.txt", "sed -i 's/a/b/' /tmp/f",
+    ]
+    # N3 : critique — confirmable UNIQUEMENT localement (jamais à distance, cf. IS_REMOTE).
+    critical_expected = [
+        "chmod 644 file", "chown user file", "apt install foo", "pip install foo", "nohup ./run.sh &",
+    ]
     fails = 0
     for cmd in blocked_expected:
         r = c(cmd)
@@ -92,9 +101,18 @@ def test_security_classify():
         r = c(cmd)
         if r != 'read':
             print(f"❌ SECURITY: {cmd!r} -> {r} (attendu read)"); fails += 1
+    for cmd in write_expected:
+        r = c(cmd)
+        if r != 'write':
+            print(f"❌ SECURITY: {cmd!r} -> {r} (attendu write/N2)"); fails += 1
+    for cmd in critical_expected:
+        r = c(cmd)
+        if r != 'critical':
+            print(f"❌ SECURITY: {cmd!r} -> {r} (attendu critical/N3)"); fails += 1
     if fails:
         print(f"\n❌ {fails} échec(s) de sécurité"); return False
-    print(f"✅ SECURITY: {len(blocked_expected)} destructrices bloquées + {len(read_expected)} légitimes OK")
+    print(f"✅ SECURITY: {len(blocked_expected)} destructrices bloquées + {len(read_expected)} N1 + "
+          f"{len(write_expected)} N2 + {len(critical_expected)} N3 OK")
     return True
 
 

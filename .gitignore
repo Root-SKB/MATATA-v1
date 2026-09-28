@@ -33,6 +33,9 @@ ehthumbs.db
 *.bak
 session_*.log
 
+# Personal notes
+docs/
+
 # Misc
 .env
 .env.local

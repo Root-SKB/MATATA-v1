@@ -10,7 +10,8 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
 - Inference: Intel Arc MTL iGPU via Vulkan (Ollama v0.32.15), 100% offload
 - Tool calling: Ollama native tool calling (tools parameter in ollama.chat)
 - Agent loop: max 5 steps, tool call → execute → feed result back
-- Safety: command whitelist (READ auto-execute, WRITE ask confirmation, BLOCKED never)
+- Safety: command whitelist, N1/N2/N3 (READ auto-execute, WRITE/N2 ask confirmation local or
+  remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
 - agent.py — Main agent script (single file, current version: v12.5)
@@ -26,8 +27,20 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
 
-## Current Version: v12.5 (Whisper STT Vulkan)
+## Current Version: v12.6 (N1/N2/N3 security levels)
 3 tools: run_shell, search_files, system_info
+- v12.6: split WRITE_COMMANDS into N2 (write: mkdir/cp/mv/touch/tee/echo/sed — confirm,
+  local ou distant) et CRITICAL_COMMANDS/N3 (chmod/chown/apt/pip/nano/vim/nohup — confirm,
+  UNIQUEMENT locale). New IS_REMOTE flag (False today, no remote channel exists yet) gates
+  N3: if IS_REMOTE and lvl=='critical', refuse outright ("REFUSED: N3 critical action
+  requires a fresh LOCAL confirmation, not available remotely") instead of prompting.
+  Patron inspiré de jarvis-assistant-vocal (confirmed real, see docs/TECH_WATCH.md §7):
+  "N1/N2/N3 permissions keep safe reads separate from sensitive and critical actions; N3
+  always requires a fresh local spoken confirmation and is never remotely executable."
+  This is step 1 of the Phase 1 web/mobile prerequisite (remote WRITE confirmation gap) —
+  IS_REMOTE still needs an actual remote channel (Tailscale-facing bridge) to ever flip True.
+  Also: VAD native whisper.cpp branchée dans _whisper_server_start() — --vad ajouté au
+  server (build-vulkan), toggle MATATA_WHISPER_VAD=0 pour désactiver.
 - v10.1: Bug 1 (dedup sliding window of 5) + Bug 2 (200-char cap) fixed
 - v10.2: Bug 3 fixed — output caps 600 (shell/search) / 800 (system_info)
 - v10.3: empty-response retry keeps tools (fixes JSON-text dead-end);

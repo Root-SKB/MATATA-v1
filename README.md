@@ -92,13 +92,14 @@ cd MATATA
 python3 -m venv venv
 source venv/bin/activate
 
-# 3. Install deps
+# 3. Installe le package (console `matata` + deps)
+pip install -e .
 pip install -r agent-pc/requirements.txt
 
 # 4. Lance l'agent
-python agent-pc/agent.py --timer
+matata --timer
 # Variante modèle léger :
-MATATA_MODEL=qwen3.5:4b python agent-pc/agent.py --timer
+MATATA_MODEL=qwen3.5:4b matata --timer
 ```
 
 > ⚠️ Les modèles vivent dans `/usr/share/ollama/.ollama/models` (service systemd).
@@ -124,8 +125,11 @@ MATATA_MODEL=qwen3.5:4b python agent-pc/agent.py --timer
 
 ```
 MATATA/
+├── matata/                  # Package (empaquetage fin) → console `matata` + `python3 -m matata`
+│   ├── cli.py               # Point d'entrée : délègue à agent-pc/agent.py (single-file conservé)
+│   └── __main__.py          # `python3 -m matata`
 ├── agent-pc/               # Phase 1: Agent PC + Phase 2: Voice
-│   ├── agent.py            # Main agent (tool calling + voice + wake, ~1010 lines)
+│   ├── agent.py            # Main agent (tool calling + voice + wake, ~1040 lines, v12.6)
 │   ├── CLAUDE.md           # Architecture & constraints
 │   ├── requirements.txt     # Dependencies (ollama)
 │   ├── test_fixes.py        # Unit tests
@@ -166,9 +170,10 @@ MATATA/
 
 ```bash
 source venv/bin/activate
-python agent-pc/agent.py --timer        # texte seul
-python agent-pc/agent.py --voice        # push-to-talk
-python agent-pc/agent.py --wake         # mains libres (mot-clé MATATA)
+matata --timer        # texte seul
+matata --voice        # push-to-talk
+matata --wake         # mains libres (mot-clé MATATA)
+# équivalents : python3 -m matata … ou python3 agent-pc/agent.py …
 ```
 
 ### Lancer les tests
