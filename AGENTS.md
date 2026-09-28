@@ -12,7 +12,7 @@ Single-file Python agent (`agent.py`) using Qwen3 8B via Ollama native tool call
 | `matata/` | Thin package wrapper → console `matata` / `python3 -m matata` (delegates to agent.py) |
 | `agent-pc/agent.py` | **Single file agent** (~1040 lines, v12.6). All logic here. |
 | `agent-pc/test_fixes.py` | Unit tests: command dedup + length limit + security classify (no Ollama needed) |
-| `agent-pc/tests.sh` | Integration test suite (takes 10-15 min, requires Ollama) |
+| `agent-pc/tests.sh` | Integration test suite (~3 min on iGPU, requires Ollama) |
 | `voice/` | Whisper.cpp + Piper models + wake word model (gitignored binaries, committed config) |
 
 `agent-pc/CLAUDE.md` has the full architecture doc — read it for context.
