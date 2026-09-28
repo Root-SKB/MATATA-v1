@@ -41,8 +41,8 @@ Fixes appliqués:
 ### Phase 2: Voice ✅ FAIT (v12.4)
 **STT + TTS + Wake Word — 100% local**
 
-- `python3 agent-pc/agent.py --voice` : push-to-talk (Entrée → parle → Entrée)
-- `python3 agent-pc/agent.py --wake` : mains libres avec mot-clé "MATATA"
+- `matata --voice` : push-to-talk (Entrée → parle → Entrée)
+- `matata --wake` : mains libres avec mot-clé "MATATA"
 - STT : whisper.cpp small (~466 Mo) — whisper-server persistant (modèle chargé 1×, fallback CLI)
 - TTS : Piper Python API in-process — bilingue fr_FR-siwis + en_US-lessac, lazy-load (1,1s), synthèse 0,1s
 - LLM : stream=True — premier token visible en ~1-2s (plus d'attente muette)
@@ -85,7 +85,7 @@ Fixes appliqués:
 
 ```bash
 # 1. Clone le repo
-git clone https://github.com/Root-SKB/MATATA.git
+git clone https://github.com/Root-SKB/MATATA-v1.git
 cd MATATA
 
 # 2. Crée virtualenv
@@ -138,9 +138,6 @@ MATATA/
 │   ├── models/               # ggml-small.bin + piper onnx + matata.onnx (gitignored)
 │   ├── training/             # Colab notebooks R1→R3 (committed)
 │   └── whisper.cpp/          # whisper.cpp build (gitignored)
-├── core/                   # Phase 3: MATATA Core (placeholder)
-├── cloud/                  # Phase 4: Cloud Mentor (placeholder)
-├── mcp/                    # Phase 5: MCP Tools (placeholder)
 ├── venv/                   # Python virtualenv (gitignored)
 ├── README.md               # This file
 ├── .gitignore
@@ -156,7 +153,7 @@ MATATA/
 | **OS** | Ubuntu 24.04, kernel 6.17.0-1007-oem |
 | **CPU** | Intel Core Ultra 7 155H (22 threads, 16 cores) |
 | **RAM** | 32GB DDR5-5600 |
-| **Disk** | 512GB NVMe (195GB free) |
+| **Disk** | 512GB NVMe (468GB utilisables, ~151GB libres) |
 | **GPU** | Intel Arc iGPU (MTL) — utilisé via Vulkan (`OLLAMA_IGPU_ENABLE=1`), 100% offload |
 | **Model** | Qwen3 8B (défaut) ou Qwen3.5 4B via `MATATA_MODEL` |
 | **Inference** | ~6-10 tok/s iGPU, ~9-50s per turn (vs 31-600s CPU-only avant) |
@@ -200,14 +197,19 @@ cat ~/.agent-pc-backups/session_*.log
 
 ## Guardrails & Safety
 
-### Whitelist READ (auto-exécution)
+### Whitelist N1 READ (auto-exécution)
 ```
 ls, cat, find, du, free, df, ps, date, grep, wc, tail, head, etc.
 ```
 
-### Whitelist WRITE (demande confirmation)
+### N2 WRITE (demande confirmation)
 ```
-mkdir, cp, mv, touch, tee, chmod, chown, apt, pip, echo, sed
+mkdir, cp, mv, touch, tee, echo, sed
+```
+
+### N3 CRITIQUE (demande confirmation LOCALE uniquement — jamais à distance)
+```
+chmod, chown, apt, pip, nano, vim, nohup
 ```
 
 ### BLOCKED (jamais)
@@ -216,6 +218,7 @@ rm, rmdir, shred, unlink, dd, mkfs, wipefs, fdisk, parted, kill, killall,
 reboot, shutdown, poweroff, halt, init
 ```
 (v12.5: détection aussi via -exec / xargs / sh -c / system() / systemctl reboot,poweroff,halt,kill,stop — ex. `find -exec rm` → bloqué)
+(v12.6: scission N2/N3 — les commandes critiques ne peuvent pas être confirmées depuis un canal distant, flag `IS_REMOTE` refusant tout N3 non local)
 
 ### Auto-backup avant modifs
 Avant `sed -i`, `tee >`, etc., backup auto à `~/.agent-pc-backups/`
@@ -275,12 +278,12 @@ MIT — Free to use, modify, distribute
 ## Notes
 
 - **100% Offline**: Aucun appel API, tout exécuté localement
-- **Minimaliste**: ~1010 lignes Python, zéro frameworks lourds
+- **Minimaliste**: ~1040 lignes Python, zéro frameworks lourds
 - **Educational**: Code limpide, idéal pour apprendre tool calling & Ollama
 - **Production-ready**: Logs, backups, safety guardrails
 
 ---
 
-**Version**: 2.1.0 (Phase 1 + Phase 2 Voice + Whisper STT Vulkan)
-**Last Updated**: 2026-08-30  
+**Version**: v12.6 (Phase 1 + Phase 2 Voice + N1/N2/N3 + packaging `matata`)
+**Last Updated**: 2026-09-28  
 **Status**: Stable ✅

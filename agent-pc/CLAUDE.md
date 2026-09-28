@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (single file, current version: v12.5)
+- agent.py — Main agent script (single file, current version: v12.6)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -221,14 +221,14 @@ Stability criterion before major work: 3 consecutive green runs (default model) 
   set repeat_penalty for this generation.
 
 ## WHAT WORKED WELL
-- 3 tools only, stream=False, temperature=0.3 — reliable across versions
+- 3 tools only, stream=True (v12.4+, premier token en ~1-2s), temperature=0.3 — reliable across versions
 - Auto-retry keeps tools now: model recovers from failed commands instead of dying in JSON-as-text
 - keep_alive 30m: warm model = fast consecutive turns
 
 ## PC SPECS
 - CPU: Intel Core Ultra 7 155H (16 cores / 22 threads)
-- RAM: 32GB DDR5-5600 (~17GB free under normal load)
-- Disk: 512GB NVMe (468GB usable)
+- RAM: 32GB DDR5-5600 (~9.5GB available under normal load, measured 2026-09-28)
+- Disk: 512GB NVMe (468GB usable, ~151GB free)
 - GPU: Intel Arc iGPU (MTL) — USED via Vulkan, 100% model offload
 - NPU: 11 TOPS (not used)
 - OS: Ubuntu 24.04.4, kernel 6.17.0-1007-oem
