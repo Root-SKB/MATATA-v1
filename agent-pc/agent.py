@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.6 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
+"""Agent PC v12.7 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
 import urllib.request, io, uuid, wave
@@ -743,6 +743,12 @@ INCOMPLETE_PATTERNS = re.compile(
     re.IGNORECASE
 )
 
+# Streaming TTS phrase-par-phrase (v12.7, patron extrait de LocalVox
+# github.com/YaPanBytes/LocalVox, core/orchestrator.py) : dès qu'une phrase
+# est complète dans le texte streamé, on la parle immédiatement au lieu
+# d'attendre la fin de toute la réponse.
+SPEAK_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+
 def trim_messages(msgs):
     if len(msgs) <= MAX_HISTORY + 1: return msgs
     return [msgs[0]] + msgs[-(MAX_HISTORY):]
@@ -771,11 +777,31 @@ def agent_turn(messages, show_timer, command_history=None):
         # --- Stream Ollama : premier token visible en ~1-2s ---
         text_buf = []
         tool_calls = None
+        speak_buf = ''      # phrases pas encore parlées (mode voix uniquement)
+        safe_to_speak = True  # False dès qu'un pattern "je vais..." apparaît (retry probable)
         try:
             for delta, tc, done in _ollama_stream(messages, tools=TOOLS):
                 if delta:
                     text_buf.append(delta)
                     print(delta, end='', flush=True)
+                    # Parle phrase par phrase pendant le stream (v12.7) : seulement
+                    # tant qu'aucun tool_call n'est apparu (sinon ce texte n'est
+                    # qu'un préambule, jamais parlé — comportement inchangé) et
+                    # tant que la réponse ne ressemble pas à un "je vais..." qui
+                    # finira en retry silencieux (le reliquat non parlé sera
+                    # rattrapé par le fallback plus bas si le retry échoue).
+                    if VOICE and tool_calls is None:
+                        speak_buf += delta
+                        if safe_to_speak and INCOMPLETE_PATTERNS.search(''.join(text_buf)):
+                            safe_to_speak = False
+                        if safe_to_speak:
+                            m = SPEAK_SENTENCE_RE.search(speak_buf)
+                            while m:
+                                sentence = speak_buf[:m.start()].strip()
+                                speak_buf = speak_buf[m.end():]
+                                if sentence:
+                                    speak(sentence)
+                                m = SPEAK_SENTENCE_RE.search(speak_buf)
                 if tc:
                     tool_calls = tc
         except Exception as e:
@@ -804,7 +830,13 @@ def agent_turn(messages, show_timer, command_history=None):
 
             if text.strip():
                 print(f'\U0001f916 {text}{ts}\n')
-                speak(text)
+                # Le gros de la réponse a déjà été parlé phrase par phrase pendant
+                # le stream ; speak_buf ne contient que le reliquat (fin sans
+                # ponctuation, ou tout le texte si la parole en direct a été
+                # coupée par safe_to_speak et qu'on arrive ici sans retry possible).
+                # Reste vide (donc speak() no-op) si VOICE est désactivé.
+                if speak_buf.strip():
+                    speak(speak_buf.strip())
             else:
                 # Empty response — retry sans tools pour forcer une réponse texte
                 print('  ⚠️ Pas de réponse avec outils, retry sans...')
@@ -971,7 +1003,7 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v12.6 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.7 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')

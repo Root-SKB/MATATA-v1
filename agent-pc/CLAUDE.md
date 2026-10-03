@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (single file, current version: v12.6)
+- agent.py — Main agent script (single file, current version: v12.7)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -27,8 +27,20 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
 
-## Current Version: v12.6 (N1/N2/N3 security levels)
+## Current Version: v12.7 (streaming TTS phrase-by-phrase)
 3 tools: run_shell, search_files, system_info
+- v12.7: sentence-by-sentence TTS streaming (pattern extracted from LocalVox,
+  github.com/YaPanBytes/LocalVox, see docs/TECH_WATCH.md). `SPEAK_SENTENCE_RE` splits the
+  streamed LLM text on sentence boundaries and calls `speak()` per completed sentence instead
+  of waiting for the full response — only while `tool_calls is None` (tool-call preambles are
+  never spoken, unchanged) and while the accumulated text hasn't matched `INCOMPLETE_PATTERNS`
+  (a `safe_to_speak` flag latches off the moment a "je vais..." retry-trigger phrase appears,
+  so nothing gets spoken live that might get silently retried; the leftover buffer is caught by
+  the existing post-loop fallback `speak()` call if the retry budget is exhausted). Zero impact
+  on text-only mode (`speak()` no-ops without `VOICE`) — verified via tests.sh 5/5 unchanged and
+  a 3-case simulated-stream test (normal multi-sentence, tool_calls present, incomplete-pattern
+  retry exhaustion). Only wired into the primary response path, not the empty-response retry
+  fallback (agent.py ~846-850) — left as single-shot `speak()` for now, lower-traffic path.
 - v12.6: split WRITE_COMMANDS into N2 (write: mkdir/cp/mv/touch/tee/echo/sed — confirm,
   local ou distant) et CRITICAL_COMMANDS/N3 (chmod/chown/apt/pip/nano/vim/nohup — confirm,
   UNIQUEMENT locale). New IS_REMOTE flag (False today, no remote channel exists yet) gates

@@ -10,7 +10,7 @@ Single-file Python agent (`agent.py`) using Qwen3 8B via Ollama native tool call
 | File | Role |
 |------|------|
 | `matata/` | Thin package wrapper → console `matata` / `python3 -m matata` (delegates to agent.py) |
-| `agent-pc/agent.py` | **Single file agent** (~1040 lines, v12.6). All logic here. |
+| `agent-pc/agent.py` | **Single file agent** (~1070 lines, v12.7). All logic here. |
 | `agent-pc/test_fixes.py` | Unit tests: command dedup + length limit + security classify (no Ollama needed) |
 | `agent-pc/tests.sh` | Integration test suite (~3 min on iGPU, requires Ollama) |
 | `voice/` | Whisper.cpp + Piper models + wake word model (gitignored binaries, committed config) |
@@ -61,6 +61,7 @@ python3 -m py_compile agent-pc/agent.py
 - **whisper-server** (v12.4): modèle chargé 1× au démarrage, HTTP API port 18080, fallback CLI si indisponible
 - **stream=True** (v12.4): premier token LLM visible en ~1-2s au lieu de ~15s d'attente muette
 - **Piper Python API** (v12.4): lazy-load in-process (1,1s first call, 0,1s synth), zéro subprocess piper
+- **Streaming TTS phrase-par-phrase** (v12.7): parle chaque phrase dès qu'elle est complète dans le stream LLM (regex `SPEAK_SENTENCE_RE`, patron extrait de LocalVox) au lieu d'attendre la réponse entière — gardé par `tool_calls is None` et `INCOMPLETE_PATTERNS` pour ne jamais parler un préambule de tool call ni un texte en cours de retry silencieux
 - **MODELS** voice dans `voice/models/`: ggml-small.bin (whisper), fr_FR-siwis-medium + en_US-lessac-medium (Piper), matata.onnx (wake word R3)
 - Wake word entraîné via Colab R1→R3, validé holdout 4/6, fragments Piper 0/6 FP
 
