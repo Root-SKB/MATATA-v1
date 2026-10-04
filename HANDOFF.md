@@ -111,6 +111,19 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
     (flag/env var) sans rien casser, et son implémentation remplacée sans réécrire le reste.
     Patron déjà suivi (`MATATA_ROUTER`, `MATATA_WHISPER_VAD`, `MATATA_MODEL`, `VOICE_LANG`), à
     présent formalisé comme principe à maintenir systématiquement.
+- **`smolagents` testé empiriquement (04/10/2026), ÉCARTÉ** — premier test sous la nouvelle
+  règle de gouvernance, pour vérifier qu'elle marche en pratique. `ToolCallingAgent` (pas
+  `CodeAgent`, dont le `LocalPythonExecutor` n'est explicitement pas une frontière de sécurité —
+  incompatible avec le N1/N2/N3) câblé sur `ollama_chat/qwen3:8b`, avec les 3 vrais tools
+  d'`agent.py` réutilisés tels quels (mêmes fonctions, même garde-fou). Sur les 5 requêtes
+  canoniques de `tests.sh` : **~19 minutes au total contre ~2 minutes pour `agent.py`**
+  (routeur désactivé) — 2 des 5 réponses carrément fausses (heure en UTC/anglais au lieu de
+  l'heure locale FR, "5 series found" sans rapport avec la vraie question) et 1 échec total
+  (634s puis abandon sur la requête musique). Cause : la couche de prompting/orchestration de
+  smolagents casse la synergie prompt-système/`classify_command` affinée sur 12 versions (ex.
+  ses commandes contiennent `2>/dev/null`, ce qui déclenche notre règle "`>` littéral = write").
+  **Exactement le test que la nouvelle règle appelait — gain mesuré négatif et net, pas un rejet
+  de principe.** Détail complet (tableau, causes) dans `docs/TECH_WATCH.md`.
 
 ## Reste à faire (dans l'ordre)
 

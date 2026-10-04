@@ -79,8 +79,9 @@ Bugs 1 (command dedup), 2 (200-char limit) fixed in v10.1; Bug 3 (tool output ca
   SEULEMENT si (a) 100% gratuits ET (b) apportent un gain réel mesuré — jamais un prérequis,
   toujours vérifié empiriquement avant intégration (voir l'historique des décisions dans
   `docs/TECH_WATCH.md` : Laya et semantic-router testés puis remplacés par un hand-roll léger
-  une fois le gain validé ; aucun framework d'orchestration lourd — LangChain/CrewAI/smolagents
-  — jamais intégré faute de gain mesuré qui le justifie).
+  une fois le gain validé ; `smolagents` testé empiriquement (même modèle, mêmes tools) et
+  écarté sur gain mesuré négatif — ~19min vs ~2min sur la suite de tests, 2 réponses fausses et
+  1 échec total ; LangChain/CrewAI jamais testés faute de cas d'usage le justifiant).
 - Modularité : chaque fonctionnalité (voix, routeur, TTS, STT, wake word...) doit pouvoir être
   désactivée (flag/env var) sans rien casser, et son implémentation doit pouvoir être remplacée
   (autre modèle, autre lib, autre approche) sans réécrire les autres composants — patron déjà
