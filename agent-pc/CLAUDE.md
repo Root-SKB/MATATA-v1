@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (single file, current version: v12.8)
+- agent.py — Main agent script (currently a single file, current version: v12.8)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -191,12 +191,20 @@ Bugs 1, 2 fixed v10.1; Bug 3 fixed v10.2; retry dead-end fixed v10.3. BUG 4 (slo
 inference) resolved in practice by iGPU offload — no longer tracked as a bug.
 
 ## CONSTRAINTS
-- ZERO frameworks: No LangChain/LangGraph/CrewAI. Pure Python + Ollama SDK only.
 - ZERO cloud at runtime: everything local. (README mentions a future "Cloud Mentor"
   phase — conflicts with this rule, decision pending.)
 - ZERO deletion: agent must NEVER run rm/rmdir/shred/dd/etc.
+- External deps/frameworks: open-source > local > free, accepted ONLY if (a) 100% free AND
+  (b) a measured real gain, never a prerequisite — always verified empirically before
+  integration, never rejected or adopted on principle alone (see docs/TECH_WATCH.md for the
+  track record: Laya and semantic-router both tested then replaced by a lighter hand-roll once
+  the gain was validated; LangChain/CrewAI/smolagents-style orchestration frameworks never
+  integrated for lack of a measured gain, not a blanket ban).
+- Modularity: every feature (voice, router, TTS, STT, wake word...) must be disableable via a
+  flag/env var without breaking the rest, and its implementation must be swappable (different
+  model/lib/approach) without rewriting other components — pattern already followed
+  (MATATA_ROUTER, MATATA_WHISPER_VAD, MATATA_MODEL, VOICE_LANG), keep following it for new work.
 - Max 3 tools: more caused empty responses historically.
-- Single file: agent.py stays a single file.
 
 ## MODEL CONFIG (in agent.py, near top)
 - MODEL = env MATATA_MODEL or 'qwen3:8b'

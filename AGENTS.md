@@ -3,7 +3,7 @@
 ## What this is
 
 Local AI ecosystem for Ubuntu, **100% offline**. Phase 1 (Agent PC) + Phase 2 (Voice) are built.
-Single-file Python agent (`agent.py`) using Qwen3 8B via Ollama native tool calling, with Whisper STT + Piper TTS + wake word detection. No LangChain/CrewAI/etc.
+Python agent (`agent.py`, currently single-file) using Qwen3 8B via Ollama native tool calling, with Whisper STT + Piper TTS + wake word detection.
 
 ## Entrypoints & key files
 
@@ -74,10 +74,20 @@ Bugs 1 (command dedup), 2 (200-char limit) fixed in v10.1; Bug 3 (tool output ca
 
 ## Constraints
 
-- ZERO frameworks, ZERO cloud, ZERO deletion operations
+- ZERO cloud, ZERO deletion operations
+- Cadre stratégique : **open-source > local > gratuit**. Externe/cloud/frameworks acceptés
+  SEULEMENT si (a) 100% gratuits ET (b) apportent un gain réel mesuré — jamais un prérequis,
+  toujours vérifié empiriquement avant intégration (voir l'historique des décisions dans
+  `docs/TECH_WATCH.md` : Laya et semantic-router testés puis remplacés par un hand-roll léger
+  une fois le gain validé ; aucun framework d'orchestration lourd — LangChain/CrewAI/smolagents
+  — jamais intégré faute de gain mesuré qui le justifie).
+- Modularité : chaque fonctionnalité (voix, routeur, TTS, STT, wake word...) doit pouvoir être
+  désactivée (flag/env var) sans rien casser, et son implémentation doit pouvoir être remplacée
+  (autre modèle, autre lib, autre approche) sans réécrire les autres composants — patron déjà
+  suivi (`MATATA_ROUTER`, `MATATA_WHISPER_VAD`, `MATATA_MODEL`, `VOICE_LANG`) à maintenir pour
+  toute nouvelle feature.
 - Reply in French, concise
 - Never add more than 3 tools (causes empty responses with 8B)
-- Single-file simplicity for `agent.py` is a hard constraint
 
 ## Complementary docs
 
