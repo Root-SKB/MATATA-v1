@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MATATA</title>
+<style>
+  :root {
+    --bg: #101114;
+    --card: #17181c;
+    --panel: #1c1e23;
+    --bubble-user: linear-gradient(135deg, #6366f1, #4f46e5);
+    --bubble-assistant: #24262d;
+    --bubble-tool: #3a2a16;
+    --bubble-tool-text: #f0b864;
+    --text: #edeef0;
+    --text-dim: #8b8d94;
+    --accent: #6366f1;
+    --accent-hover: #7577f2;
+    --border: #2a2c33;
+    --shadow: 0 20px 50px -20px rgba(0,0,0,.6);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef0f4;
+      --card: #ffffff;
+      --panel: #ffffff;
+      --bubble-user: linear-gradient(135deg, #6366f1, #4f46e5);
+      --bubble-assistant: #f1f2f5;
+      --bubble-tool: #fdf0d8;
+      --bubble-tool-text: #92600f;
+      --text: #15161a;
+      --text-dim: #71737b;
+      --accent: #4f46e5;
+      --accent-hover: #4338ca;
+      --border: #e5e6eb;
+      --shadow: 0 20px 50px -24px rgba(20,20,40,.25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { display: flex; align-items: center; justify-content: center; padding: 0; }
+  #app {
+    display: flex; flex-direction: column; height: 100vh; width: 100%; max-width: 720px;
+    background: var(--card);
+  }
+  @media (min-width: 760px) {
+    body { padding: 24px; }
+    #app { height: calc(100vh - 48px); border-radius: 20px; box-shadow: var(--shadow); overflow: hidden; border: 1px solid var(--border); }
+  }
+  header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; background: var(--panel); flex-shrink: 0;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .logo {
+    width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+    background: var(--bubble-user);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; color: white; letter-spacing: -0.5px;
+  }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.2px; }
+  .status-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); margin-top: 1px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6e76; flex-shrink: 0; transition: background .25s; }
+  .dot.ok { background: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,.15); }
+  .dot.down { background: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+  header .model { font-size: 12px; color: var(--text-dim); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  #log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
+  #log::-webkit-scrollbar { width: 6px; }
+  #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .empty-state {
+    margin: auto; text-align: center; color: var(--text-dim); max-width: 280px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .empty-state .logo { width: 44px; height: 44px; border-radius: 14px; font-size: 18px; margin-bottom: 4px; }
+  .empty-state h2 { font-size: 15px; color: var(--text); margin: 0; font-weight: 600; }
+  .empty-state p { font-size: 13px; margin: 0; line-height: 1.5; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .msg {
+    max-width: 78%; padding: 11px 15px; border-radius: 16px; line-height: 1.45; font-size: 14.5px;
+    white-space: pre-wrap; word-wrap: break-word; animation: rise .22s ease-out;
+  }
+  .msg.user { align-self: flex-end; background: var(--bubble-user); color: white; border-bottom-right-radius: 5px; }
+  .msg.assistant { align-self: flex-start; background: var(--bubble-assistant); border-bottom-left-radius: 5px; }
+  .msg.tool { align-self: flex-start; background: var(--bubble-tool); color: var(--bubble-tool-text); border-bottom-left-radius: 5px; font-size: 13px; }
+  .msg.transcript { align-self: flex-end; background: var(--bubble-user); color: white; border-bottom-right-radius: 5px; opacity: .78; font-style: italic; }
+  .msg-time { font-size: 10.5px; opacity: .55; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  .typing { align-self: flex-start; background: var(--bubble-assistant); border-radius: 16px; border-bottom-left-radius: 5px; padding: 13px 17px; display: flex; gap: 4px; animation: rise .22s ease-out; }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); animation: bounce 1.3s infinite; }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce { 0%,60%,100% { transform: translateY(0); opacity: .5; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+  footer { padding: 14px 16px; border-top: 1px solid var(--border); background: var(--panel); flex-shrink: 0; }
+  .input-row { display: flex; gap: 8px; align-items: flex-end; }
+  #input {
+    flex: 1; resize: none; max-height: 120px; min-height: 44px;
+    padding: 11px 16px; border-radius: 22px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 14.5px; font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  #input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(99,102,241,.15); }
+  #input::placeholder { color: var(--text-dim); }
+  button.round {
+    width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    background: var(--accent); color: white; transition: transform .12s, background .15s, opacity .15s;
+  }
+  button.round svg { width: 19px; height: 19px; }
+  button.round:hover:not(:disabled) { background: var(--accent-hover); }
+  button.round:active:not(:disabled) { transform: scale(0.9); }
+  button.round:disabled { opacity: .35; cursor: not-allowed; }
+  button.round.mic { background: var(--bubble-assistant); color: var(--text); }
+  button.round.mic:hover:not(:disabled) { background: var(--border); }
+  button.round.mic.recording { background: #ef4444; color: white; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,.45); } 50% { box-shadow: 0 0 0 9px rgba(239,68,68,0); } }
+  #hint { text-align: center; color: var(--text-dim); font-size: 11.5px; padding-top: 8px; height: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <div class="logo">M</div>
+      <div>
+        <h1>MATATA</h1>
+        <div class="status-row"><span class="dot" id="statusDot"></span><span id="statusText">connecting…</span></div>
+      </div>
+    </div>
+    <span class="model" id="modelName"></span>
+  </header>
+  <div id="log"></div>
+  <footer>
+    <div class="input-row">
+      <textarea id="input" rows="1" placeholder="Type a message…"></textarea>
+      <button class="round mic" id="micBtn" title="Record">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V20H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.08A7 7 0 0 0 19 11Z"/></svg>
+      </button>
+      <button class="round" id="sendBtn" title="Send">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.6 22 12 3.4 3.4 3 10l13 2-13 2z"/></svg>
+      </button>
+    </div>
+    <div id="hint"></div>
+  </footer>
+</div>
+
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const micBtn = document.getElementById('micBtn');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const modelName = document.getElementById('modelName');
+const hint = document.getElementById('hint');
+
+let token = localStorage.getItem('matata_token') || '';
+let busy = false;
+
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (token) h['Authorization'] = 'Bearer ' + token;
+  return h;
+}
+
+async function promptToken() {
+  const t = window.prompt('MATATA_SERVE_TOKEN (leave empty if none configured):', '');
+  if (t !== null) {
+    token = t.trim();
+    localStorage.setItem('matata_token', token);
+  }
+}
+
+function clearEmptyState() {
+  const e = log.querySelector('.empty-state');
+  if (e) e.remove();
+}
+
+function addMsg(text, cls) {
+  clearEmptyState();
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  const t = document.createElement('div');
+  t.className = 'msg-text';
+  t.textContent = text;
+  d.appendChild(t);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+function setMsgText(el, text) {
+  el.querySelector('.msg-text').textContent = text;
+  log.scrollTop = log.scrollHeight;
+}
+
+function addTimestamp(el, seconds) {
+  const t = document.createElement('div');
+  t.className = 'msg-time';
+  t.textContent = (seconds < 1 ? seconds.toFixed(3) : seconds.toFixed(1)) + 's';
+  el.appendChild(t);
+}
+
+function addTyping() {
+  clearEmptyState();
+  const d = document.createElement('div');
+  d.className = 'typing';
+  d.innerHTML = '<span></span><span></span><span></span>';
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+function showEmptyState() {
+  if (log.children.length) return;
+  const d = document.createElement('div');
+  d.className = 'empty-state';
+  d.innerHTML = '<div class="logo">M</div><h2>Hi, I\'m MATATA</h2><p>Ask me anything, or tap the mic to talk.</p>';
+  log.appendChild(d);
+}
+
+function setBusy(v) {
+  busy = v;
+  sendBtn.disabled = v;
+  micBtn.disabled = v;
+  input.disabled = v;
+}
+
+async function checkHealth() {
+  try {
+    const r = await fetch('/health');
+    const j = await r.json();
+    statusDot.className = 'dot ok';
+    statusText.textContent = j.data.remote ? 'remote' : 'online';
+    modelName.textContent = j.data.model;
+  } catch (e) {
+    statusDot.className = 'dot down';
+    statusText.textContent = 'offline';
+    modelName.textContent = '';
+  }
+}
+
+// --- Streaming request helper -----------------------------------------
+// Reads a Server-Sent Events response as it arrives (fetch + ReadableStream,
+// not EventSource, since we need POST + custom headers for auth). Calls
+// onEvent(obj) for every {type: ...} event: "transcript" (voice only, fires
+// once early), "token" (append text to the live reply), "reset" (discard
+// what's been streamed so far — a tool-call preamble or a retried answer),
+// "done" (final event, same {ok, message, data} shape as the rest of the
+// API), "error".
+async function streamRequest(path, init, onEvent) {
+  let r = await fetch(path, init());
+  if (r.status === 401) {
+    await promptToken();
+    r = await fetch(path, init());
+  }
+  if (!r.ok) {
+    let body = {};
+    try { body = await r.json(); } catch (e) {}
+    onEvent({ type: 'done', ok: false, message: body.message || 'An error occurred',
+              data: body.data || {} });
+    return;
+  }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if (chunk.startsWith('data: ')) {
+        try { onEvent(JSON.parse(chunk.slice(6))); } catch (e) {}
+      }
+    }
+  }
+}
+
+// Drives one streamed turn: creates the live bubble, appends tokens as they
+// arrive, handles reset/transcript/done, shows the elapsed time on completion.
+function handleTurnEvents(pending) {
+  let bubble = null;
+  let text = '';
+  return function onEvent(ev) {
+    if (ev.type === 'transcript') {
+      pending.remove();
+      addMsg(ev.text, 'transcript');
+      return;
+    }
+    if (ev.type === 'reset') {
+      text = '';
+      if (bubble) { setMsgText(bubble, ''); }
+      return;
+    }
+    if (ev.type === 'token') {
+      if (!bubble) { pending.remove(); bubble = addMsg('', 'assistant'); }
+      text += ev.text;
+      setMsgText(bubble, text);
+      return;
+    }
+    if (ev.type === 'done') {
+      pending.remove();
+      if (!ev.ok) {
+        addMsg((ev.data && ev.data.error) || ev.message, 'tool');
+        return;
+      }
+      const isTool = ev.data.role === 'tool';
+      if (!bubble || isTool) {
+        if (bubble) bubble.remove();
+        bubble = addMsg(ev.data.reply || '(no reply)', isTool ? 'tool' : 'assistant');
+      } else if (text !== ev.data.reply) {
+        setMsgText(bubble, ev.data.reply || text);  // reconciliation, should rarely differ
+      }
+      if (typeof ev.data.elapsed_s === 'number') addTimestamp(bubble, ev.data.elapsed_s);
+    }
+  };
+}
+
+async function sendText() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  input.value = '';
+  input.style.height = 'auto';
+  addMsg(text, 'user');
+  setBusy(true);
+  const pending = addTyping();
+  try {
+    await streamRequest('/chat/', () => ({
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ message: text }),
+    }), handleTurnEvents(pending));
+  } catch (e) {
+    pending.remove();
+    addMsg('Network error: ' + e.message, 'tool');
+  } finally {
+    setBusy(false);
+    input.focus();
+  }
+}
+
+sendBtn.addEventListener('click', sendText);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+
+// --- Microphone ---
+let mediaRecorder = null;
+let chunks = [];
+let recording = false;
+
+async function toggleMic() {
+  if (busy) return;
+  if (!recording) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus' : (MediaRecorder.isTypeSupported('audio/ogg') ? 'audio/ogg' : '');
+      mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      chunks = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        await sendVoice(blob);
+      };
+      mediaRecorder.start();
+      recording = true;
+      micBtn.classList.add('recording');
+      hint.textContent = 'Recording… tap again to stop';
+    } catch (e) {
+      addMsg('Microphone unavailable: ' + e.message, 'tool');
+    }
+  } else {
+    mediaRecorder.stop();
+    recording = false;
+    micBtn.classList.remove('recording');
+    hint.textContent = '';
+  }
+}
+
+async function sendVoice(blob) {
+  setBusy(true);
+  const pending = addTyping();
+  try {
+    await streamRequest('/voice/', () => ({
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': blob.type || 'audio/webm' }),
+      body: blob,
+    }), handleTurnEvents(pending));
+  } catch (e) {
+    pending.remove();
+    addMsg('Network error: ' + e.message, 'tool');
+  } finally {
+    setBusy(false);
+  }
+}
+
+micBtn.addEventListener('click', toggleMic);
+
+showEmptyState();
+checkHealth();
+setInterval(checkHealth, 15000);
+input.focus();
+</script>
+</body>
+</html>

@@ -176,6 +176,53 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
    Risque présent aussi en CLI normal (pas seulement `--serve`), juste jamais déclenché avant.
    Détail complet (dont la leçon sur le faux diagnostic de blocage via `ps`/stdout bufferisé)
    dans `docs/TECH_WATCH.md`.
+8. **Interface PC ajoutée (04/10/2026, v12.10)** — `GET /` sert `web/index.html` (page statique
+   autonome, CSS/JS inline, zéro dépendance) : champ texte + bouton micro + bulles de
+   conversation. **Web app choisie plutôt que native** (décision prise avec l'utilisateur) :
+   même page+API réutilisable pour la Phase 1 mobile via Tailscale, pas de second dev par
+   plateforme. Micro : `MediaRecorder` navigateur → `POST /voice` (nouveau) → `ffmpeg` → WAV
+   16kHz → `transcribe_audio()` existant (whisper.cpp, zéro nouveau code STT). Réponse texte
+   uniquement (décision utilisateur : plus simple pour cette version, voix en sortie plus tard
+   si besoin). `--serve` démarre maintenant aussi `whisper-server`. Validé : `curl /voice` avec
+   un clip Piper→webm synthétique (transcription + routage + réponse corrects), rendu vérifié
+   par captures d'écran Chrome headless (état vide + conversation peuplée, 4 styles de bulles).
+   `tests.sh` 5/5 + `test_fixes.py` inchangés. Détail complet dans `docs/TECH_WATCH.md`.
+9. **Retouches `--serve` (04/10/2026, v12.11-v12.12)** — demandées par l'utilisateur :
+   - **Convention API** : endpoints POST avec `/` final (`/chat/`, `/voice/`, `/reset/`), GET
+     sans. Réponse toujours `{"ok", "message", "data"}` ; erreur → `message` = toujours
+     `"An error occurred"` (littéral), détail dans `data.error`.
+   - **Tout le périmètre `--serve`/web en anglais** (page + messages API) — portée limitée à ce
+     code, le reste d'`agent.py` (prints, réponses du LLM en français) inchangé.
+   - **Refonte visuelle** (retour : "pas cool") : icônes SVG, dégradé indigo, indicateur de
+     frappe animé, état vide accueillant, mise en page carte sur grand écran.
+   - Leçon notée : `--screenshot` headless peut capturer en pleine animation (rendu délavé
+     trompeur) — ajouter `--virtual-time-budget=2000` pour les prochaines vérifications visuelles.
+   - `tests.sh` 5/5 + `test_fixes.py` inchangés. Détail complet dans `docs/TECH_WATCH.md`.
+10. **Vrai bug trouvé par l'utilisateur en testant `--serve` (04/10/2026, v12.13)** — "Qui
+    es-tu ?"/"Que peux-tu faire ?"/"Comment ça marche ?" étaient classées `greeting` et
+    recevaient une réponse en boîte au lieu d'une vraie réponse LLM. **Cause vérifiée** : ces
+    questions scorent 0.52-0.66 pour `greeting`, plage qui chevauche entièrement les vrais
+    saluts (0.51-0.97) — aucun seuil ne pouvait séparer les deux, car aucune des 4 catégories ne
+    représentait "question sur l'agent". **Corrigé** en ajoutant une 5ᵉ catégorie `'other'`
+    (~30 utterances identité/capacité/méta, jamais fast-pathée) — zéro changement de code
+    ailleurs, juste des utterances en plus. Revérifié : les questions qui plantaient atteignent
+    maintenant le LLM (score 0.79-0.98 pour `other`). 24 requêtes de contrôle sur les 5
+    catégories : 100%, aucune régression. `tests.sh` 5/5 + `test_fixes.py` inchangés. **Leçon
+    importante** : le banc de 100 requêtes qui a validé le routeur ne contenait aucun cas
+    hors-domaine — seulement des variantes des 4 intentions connues — ce trou n'a donc été
+    découvert qu'à l'usage réel. Détail complet dans `docs/TECH_WATCH.md`.
+11. **Streaming SSE réel ajouté (04/10/2026, v12.14)** — 3 problèmes remontés par l'utilisateur
+    en testant l'interface, tous causés par la même racine : `/chat/`/`/voice/` attendaient la
+    fin complète du tour avant de répondre, donc pas d'effet de frappe visible côté web, le
+    micro semblait lent (transcription affichée seulement avec la réponse complète), et aucun
+    temps affiché. **Corrigé** : `/chat/`/`/voice/` répondent maintenant en Server-Sent Events —
+    événements `token` en direct (réutilise le filtre `tool_calls is None` déjà validé pour le
+    streaming TTS v12.7, via un hook `_STREAM_SINK` optionnel, no-op hors `--serve`), `transcript`
+    dès la fin de la transcription whisper.cpp (avant même d'appeler le LLM), `done` final avec
+    `data.elapsed_s` en plus du format habituel. Validé par `curl -N` (frames SSE correctes) et
+    une vraie interaction Chrome headless pilotée en CDP (bulle capturée en train de grossir en
+    plein milieu de génération, bouton d'envoi désactivé). `tests.sh` 5/5 + `test_fixes.py`
+    inchangés. Détail complet dans `docs/TECH_WATCH.md`.
 
 ## Fichiers concernés
 

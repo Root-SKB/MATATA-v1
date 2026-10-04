@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.9 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + serveur web (--serve)"""
+"""Agent PC v12.14 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
@@ -746,6 +746,20 @@ INCOMPLETE_PATTERNS = re.compile(
 # d'attendre la fin de toute la réponse.
 SPEAK_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
+# Hook optionnel pour relayer le texte streamé en direct vers le client --serve
+# (Server-Sent Events) pendant qu'agent_turn tourne. None en CLI/voix/wake —
+# zéro changement de comportement hors --serve (modularité). Assigné/nettoyé
+# par run_server() SOUS le lock qui sérialise déjà les tours, donc aucune
+# course possible entre deux requêtes concurrentes.
+_STREAM_SINK = None
+
+def _emit_stream(event_type, **kw):
+    if _STREAM_SINK:
+        try:
+            _STREAM_SINK(event_type, **kw)
+        except Exception:
+            pass
+
 # === PRE-LLM ROUTER (v12.8, patron validé contre Laya + semantic-router/FastEmbed,
 # voir docs/TECH_WATCH.md) ===
 # Routeur par similarité d'embeddings (FastEmbed/ONNX, ~222Mo de deps, zéro torch)
@@ -830,6 +844,27 @@ ROUTER_UTTERANCES = {
         "Size of the Music directory", "Total size of Documents folder",
         "Count files inside Desktop folder", "Number of subfolders in Documents",
     ],
+    # 'other' : questions sur l'agent lui-même / hors-sujet — JAMAIS fast-pathée
+    # (seules greeting/time_date le sont dans handle_turn). Ajoutée le 04/10/2026
+    # suite à un bug réel observé : "Qui es-tu ?"/"Que peux-tu faire ?" étaient
+    # classées 'greeting' (score 0.52-0.66, chevauche entièrement la plage des
+    # vrais saluts 0.51-0.97 — aucun seuil ne peut séparer les deux). Cause
+    # racine : aucune des 4 catégories ne représentait ce type de question,
+    # l'algo les attirait par défaut vers la plus proche (greeting). Cette
+    # catégorie leur donne un vrai foyer sémantique pour les détourner.
+    'other': [
+        "Qui es-tu ?", "Qui es tu", "Comment tu t'appelles ?", "T'es qui ?",
+        "Que peux-tu faire ?", "Que sais-tu faire ?", "Quelles sont tes capacités ?",
+        "Comment ça marche ?", "Explique-moi ton fonctionnement",
+        "C'est quoi MATATA ?", "Parle-moi de toi", "Es-tu une IA ?",
+        "Tu es un robot ?", "Comment tu fonctionnes ?", "À quoi tu sers ?",
+        "Raconte-moi une blague", "Quelle est la capitale de la France ?",
+        "Who are you?", "What's your name?", "What can you do?",
+        "What are your capabilities?", "How does this work?",
+        "Explain how you work", "What is MATATA?", "Tell me about yourself",
+        "Are you an AI?", "Are you a robot?", "How do you function?",
+        "What are you for?", "Tell me a joke", "What's the capital of France?",
+    ],
 }
 
 _router_model = None
@@ -887,6 +922,7 @@ def _fast_reply(messages, show_timer, reply, t0):
     du tour (avant route_intent), pour afficher le vrai temps écoulé."""
     ts = f'  ⏱️ {time.time()-t0:.3f}s (routeur)' if show_timer else ''
     print(f'\U0001f916 {reply}{ts}\n')
+    _emit_stream('token', text=reply)
     speak(reply)
     messages.append({'role': 'assistant', 'content': reply})
     log_event('resp', reply[:300])
@@ -958,6 +994,8 @@ def agent_turn(messages, show_timer, command_history=None):
                 if delta:
                     text_buf.append(delta)
                     print(delta, end='', flush=True)
+                    if tool_calls is None:
+                        _emit_stream('token', text=delta)
                     # Parle phrase par phrase pendant le stream (v12.7) : seulement
                     # tant qu'aucun tool_call n'est apparu (sinon ce texte n'est
                     # qu'un préambule, jamais parlé — comportement inchangé) et
@@ -980,11 +1018,17 @@ def agent_turn(messages, show_timer, command_history=None):
                     tool_calls = tc
         except Exception as e:
             print(f'\nErreur Ollama: {e}')
+            _emit_stream('error', error=str(e))
             return
         if text_buf or tool_calls:
             print()  # newline after stream
 
         text = ''.join(text_buf)
+        if tool_calls and text.strip():
+            # Du texte a été streamé (donc affiché en direct côté --serve) avant
+            # qu'un tool_call n'apparaisse dans le même step : ce n'était qu'un
+            # préambule, jamais la réponse finale — on dit au client de l'effacer.
+            _emit_stream('reset')
         if os.environ.get('AGENT_DEBUG'):
             tc_count = len(tool_calls) if tool_calls else 0
             print(f"[DBG] step={step} tc={tc_count} text={len(text)}", file=sys.stderr)
@@ -994,6 +1038,7 @@ def agent_turn(messages, show_timer, command_history=None):
             if INCOMPLETE_PATTERNS.search(text) and step < max_steps:
                 print(f'\U0001f916 {text}')
                 print('  \u26a0\ufe0f Auto-retry...')
+                _emit_stream('reset')  # texte stream\u00e9 mais sur le point d'\u00eatre r\u00e9essay\u00e9
                 messages.append({'role': 'assistant', 'content': text})
                 messages.append({'role': 'user', 'content': 'Do not describe. CALL the tool NOW.'})
                 log_event('retry', text[:200])
@@ -1021,8 +1066,12 @@ def agent_turn(messages, show_timer, command_history=None):
                         if delta:
                             rbuf.append(delta)
                             print(delta, end='', flush=True)
+                            if tc_retry is None:
+                                _emit_stream('token', text=delta)
                         if tc:
                             tc_retry = tc
+                            if ''.join(rbuf).strip():
+                                _emit_stream('reset')
                     if rbuf or tc_retry:
                         print()
                     rtxt = ''.join(rbuf)
@@ -1149,19 +1198,44 @@ def agent_turn(messages, show_timer, command_history=None):
     ts = f'  \u23f1\ufe0f {elapsed:.1f}s' if show_timer else ''
     print(f'(max {max_steps} \u00e9tapes){ts}\n')
 
-# === SERVEUR WEB MINIMAL (v12.9, --serve) ===
-# API HTTP pour piloter l'agent \u00e0 distance (ex. via Tailscale, d\u00e9j\u00e0 configur\u00e9 mais
-# jamais exploit\u00e9 jusqu'ici). Volontairement stdlib pur (http.server) : pas de
-# framework \u2014 quelques endpoints JSON pour un seul utilisateur ne justifient pas
-# FastAPI/aiohttp (r\u00e8gle "gain r\u00e9el mesur\u00e9", voir AGENTS.md). Mode exclusif : ne
-# tourne pas en m\u00eame temps que --voice/--wake/CLI interactif (modularit\u00e9 : juste
-# un nouveau mode optionnel, rien d'existant ne change si on ne l'active pas).
-# N2/N3 toujours refus\u00e9s \u00e0 distance dans cette premi\u00e8re version (IS_REMOTE=True
-# pendant toute la dur\u00e9e du mode) \u2014 pas de confirmation asynchrone distante
-# impl\u00e9ment\u00e9e, cf. gate ajout\u00e9 dans agent_turn ci-dessus.
+# === MINIMAL WEB SERVER (v12.9, --serve) ===
+# HTTP API to drive the agent remotely (e.g. via Tailscale, already configured
+# but never used until now). Deliberately pure stdlib (http.server): no
+# framework \u2014 a handful of JSON endpoints for a single user don't justify
+# FastAPI/aiohttp ("real measured gain" rule, see AGENTS.md). Standalone mode:
+# doesn't run alongside --voice/--wake/interactive CLI (modularity: just a new
+# opt-in mode, nothing existing changes unless you use it).
+# N2/N3 are always refused remotely in this first version (IS_REMOTE=True for
+# the whole duration of the mode) \u2014 no async remote confirmation flow
+# implemented yet, see the gate added in agent_turn above.
 SERVE_PORT = int(os.environ.get('MATATA_SERVE_PORT', '8765'))
 SERVE_HOST = os.environ.get('MATATA_SERVE_HOST', '127.0.0.1')
 SERVE_TOKEN = os.environ.get('MATATA_SERVE_TOKEN', '')
+WEB_INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web', 'index.html')
+
+def _voice_upload_to_text(raw, content_type):
+    """Converts a browser recording (webm/ogg) to 16kHz mono WAV via ffmpeg
+    (already a project dependency, see _make_beeps()), then reuses the
+    existing whisper.cpp transcription (transcribe_audio) as-is."""
+    ext = 'ogg' if 'ogg' in (content_type or '') else 'webm'
+    uid = uuid.uuid4().hex
+    src = f'/tmp/matata_web_voice_{uid}.{ext}'
+    wav = f'/tmp/matata_web_voice_{uid}.wav'
+    try:
+        with open(src, 'wb') as f:
+            f.write(raw)
+        r = subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', src,
+                             '-ar', '16000', '-ac', '1', wav],
+                            capture_output=True, timeout=30)
+        if r.returncode != 0 or not os.path.exists(wav):
+            return ''
+        return transcribe_audio(wav)
+    except Exception:
+        return ''
+    finally:
+        for p in (src, wav):
+            try: os.remove(p)
+            except OSError: pass
 
 def run_server(messages, show_timer):
     import http.server
@@ -1169,55 +1243,137 @@ def run_server(messages, show_timer):
     lock = threading.Lock()
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def _send_json(self, code, obj):
-            body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+        # API convention (see AGENTS.md): POST paths end in "/", GET paths
+        # don't. Every JSON response is {ok, message, data} — success: data
+        # holds the real payload; error: ok=False, message is ALWAYS the
+        # generic "An error occurred", the actual detail goes in data.error.
+        def _send_json(self, code, ok, message, data=None):
+            body = json.dumps({'ok': ok, 'message': message, 'data': data or {}},
+                               ensure_ascii=False).encode('utf-8')
             self.send_response(code)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def _ok(self, code, message, data=None):
+            self._send_json(code, True, message, data)
+
+        def _err(self, code, error):
+            self._send_json(code, False, 'An error occurred', {'error': error})
+
         def _authorized(self):
             if not SERVE_TOKEN:
                 return True
             return self.headers.get('Authorization') == f'Bearer {SERVE_TOKEN}'
 
-        def do_GET(self):
-            if self.path == '/health':
-                return self._send_json(200, {'status': 'ok', 'model': MODEL, 'remote': IS_REMOTE})
-            self._send_json(404, {'error': 'not found'})
+        # --- Streaming (Server-Sent Events) : réponse en direct, token par
+        # token, comme le terminal, au lieu d'attendre la réponse complète.
+        # Un seul événement "done" en fin de flux reprend la convention
+        # {ok, message, data} habituelle ; les événements intermédiaires
+        # ("token"/"transcript"/"reset") sont des notifications de progression,
+        # pas la réponse API elle-même.
+        def _sse_start(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
 
-        def do_POST(self):
-            if not self._authorized():
-                return self._send_json(401, {'error': 'unauthorized'})
-            length = int(self.headers.get('Content-Length', 0) or 0)
-            raw = self.rfile.read(length) if length else b'{}'
+        def _sse_send(self, obj):
             try:
-                data = json.loads(raw or b'{}')
+                self.wfile.write(f'data: {json.dumps(obj, ensure_ascii=False)}\n\n'.encode('utf-8'))
+                self.wfile.flush()
             except Exception:
-                return self._send_json(400, {'error': 'invalid JSON'})
+                pass  # client a fermé la connexion : rien à faire, le tour continue côté serveur
 
-            if self.path == '/reset':
-                with lock:
-                    messages[:] = [{'role': 'system', 'content': SYSTEM}]
-                return self._send_json(200, {'status': 'reset'})
+        def _run_turn_streaming(self, inp, extra_data=None, _already_started=False):
+            global _STREAM_SINK
+            if not _already_started:
+                self._sse_start()
 
-            if self.path == '/chat':
-                inp = (data.get('message') or '').strip()
-                if not inp:
-                    return self._send_json(400, {'error': 'missing "message"'})
+            def sink(event_type, **kw):
+                self._sse_send({'type': event_type, **kw})
+
+            t0 = time.time()
+            try:
+                _STREAM_SINK = sink
                 with lock:
                     handle_turn(inp, messages, show_timer)
                     last = messages[-1]
-                return self._send_json(200, {'reply': last.get('content', ''), 'role': last.get('role', '')})
+                data = {'reply': last.get('content', ''), 'role': last.get('role', ''),
+                        'elapsed_s': round(time.time() - t0, 3)}
+                if extra_data:
+                    data.update(extra_data)
+                self._sse_send({'type': 'done', 'ok': True, 'message': 'Response generated',
+                                 'data': data})
+            except Exception as e:
+                self._sse_send({'type': 'done', 'ok': False, 'message': 'An error occurred',
+                                 'data': {'error': str(e)}})
+            finally:
+                _STREAM_SINK = None
 
-            self._send_json(404, {'error': 'not found'})
+        def do_GET(self):
+            if self.path == '/health':
+                return self._ok(200, 'System operational',
+                                 {'model': MODEL, 'remote': IS_REMOTE})
+            if self.path == '/':
+                try:
+                    with open(WEB_INDEX, 'rb') as f:
+                        body = f.read()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html; charset=utf-8')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except OSError:
+                    self._err(500, 'web/index.html missing')
+                return
+            self._err(404, 'not found')
+
+        def do_POST(self):
+            if not self._authorized():
+                return self._err(401, 'unauthorized')
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(length) if length else b''
+
+            if self.path == '/voice/':
+                transcript = _voice_upload_to_text(raw, self.headers.get('Content-Type', ''))
+                if not transcript:
+                    return self._err(400, 'could not transcribe audio')
+                # La transcription part tout de suite (avant même de streamer la
+                # réponse), pour que le navigateur affiche "ce qu'elle a compris"
+                # sans attendre la réponse complète du LLM derrière.
+                self._sse_start()
+                self._sse_send({'type': 'transcript', 'text': transcript})
+                return self._run_turn_streaming(transcript, extra_data={'transcript': transcript},
+                                                 _already_started=True)
+
+            if self.path in ('/chat/', '/reset/'):
+                try:
+                    data = json.loads(raw or b'{}')
+                except Exception:
+                    return self._err(400, 'invalid JSON')
+
+                if self.path == '/reset/':
+                    with lock:
+                        messages[:] = [{'role': 'system', 'content': SYSTEM}]
+                    return self._ok(200, 'Conversation reset')
+
+                inp = (data.get('message') or '').strip()
+                if not inp:
+                    return self._err(400, 'missing "message"')
+                return self._run_turn_streaming(inp)
+
+            self._err(404, 'not found')
 
         def log_message(self, fmt, *args):
             pass  # agent.py a d\u00e9j\u00e0 ses propres print(), pas besoin du log HTTP par d\u00e9faut
 
     httpd = http.server.ThreadingHTTPServer((SERVE_HOST, SERVE_PORT), Handler)
-    print(f'\U0001f310 Serveur sur http://{SERVE_HOST}:{SERVE_PORT}  (POST /chat, POST /reset, GET /health)')
+    print(f'\U0001f310 Interface sur http://{SERVE_HOST}:{SERVE_PORT}  '
+          f'(GET / \u2014 API : POST /chat/, POST /voice/, POST /reset/, GET /health)')
     if not SERVE_TOKEN:
         print('   \u26a0\ufe0f  MATATA_SERVE_TOKEN non d\u00e9fini \u2014 aucune authentification. '
               'OK en local/Tailscale priv\u00e9, \u00e0 d\u00e9finir avant toute exposition plus large.')
@@ -1249,6 +1405,14 @@ def main():
 
     if SERVE:
         IS_REMOTE = True
+        if os.path.exists(WHISPER_BIN):
+            print('   ⏳ Démarrage whisper-server (pour /voice)...', end=' ', flush=True)
+            if _whisper_server_start():
+                print(f'✅ (port {_WHISPER_SERVER_PORT})')
+            else:
+                print('⚠️ fallback CLI')
+        else:
+            print('   ⚠️  whisper.cpp introuvable — /voice indisponible.')
         try:
             ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}],
                         options={'num_predict': 1}, **THINK_KW)
@@ -1262,6 +1426,7 @@ def main():
             except Exception:
                 print('⚠️ indisponible, LLM seul')
         run_server(messages, show_timer)
+        _whisper_server_stop()
         return
 
     # Whisper-server persistant : pas de rechargement du modèle par passe
@@ -1290,7 +1455,7 @@ def main():
         except Exception:
             print('⚠️ indisponible, LLM seul')
 
-    print(f'\n\U0001f916 Agent PC v12.9 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.14 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')

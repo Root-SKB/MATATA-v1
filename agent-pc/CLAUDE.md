@@ -14,7 +14,8 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (currently a single file, current version: v12.9)
+- agent.py — Main agent script (currently a single file, current version: v12.14)
+- web/index.html — minimal chat UI served by `--serve` (`GET /`), self-contained (inline CSS/JS)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -29,8 +30,110 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     # API web minimale (Phase 1), N2/N3 refusés à distance :
     MATATA_SERVE_TOKEN=change-me python3 agent-pc/agent.py --serve --timer
 
-## Current Version: v12.9 (minimal web API, --serve)
+## Current Version: v12.14 (real streaming to the web UI: SSE)
 3 tools: run_shell, search_files, system_info
+- v12.14: **3 UX issues reported by the user while testing `--serve`**, all three caused by the
+  same root issue — `/chat/`/`/voice/` waited for the ENTIRE turn to finish before sending
+  anything back, so the browser saw nothing until the whole reply (and, for voice, the whole
+  transcription+reply) was ready: (1) no visible "typing" effect in the web UI despite the
+  terminal showing `stream=True` token-by-token, (2) the mic felt slow because the transcript
+  only appeared once the LLM's full answer was also ready, (3) no per-reply timing shown (the
+  terminal has `⏱️ Xs`, the web UI had nothing).
+  **Fix: real Server-Sent Events streaming.** `/chat/` and `/voice/` now respond with
+  `Content-Type: text/event-stream` instead of a single JSON blob. A new optional module-level
+  hook, `_STREAM_SINK` (`None` outside `--serve` — zero behavior change for CLI/voice/wake),
+  lets `agent_turn()`/`_fast_reply()` relay text live via `_emit_stream('token', text=delta)`
+  right next to the existing `print(delta, ...)` calls — reuses the exact same
+  `tool_calls is None` gating already proven for the v12.7 TTS streaming (so a tool-call
+  preamble is never shown as if it were the final answer; a `reset` event is emitted if text
+  was streamed for a step that turns out to be a preamble or gets silently retried, telling the
+  browser to discard it). `/voice/` emits a `transcript` event immediately after whisper.cpp
+  finishes, before the LLM is even called. A final `done` event keeps the same `{ok, message,
+  data}` shape as before, now with `data.elapsed_s` (wall-clock time of the whole turn, measured
+  in `run_server`). `web/index.html` reads the stream via `fetch()` + `response.body.getReader()`
+  (not `EventSource`, which is GET-only and can't carry the POST body or auth header) — parses
+  `data: {...}\n\n` frames, grows a live bubble per `token` event, and shows the elapsed time as
+  a small caption under the final bubble (`.msg-time`).
+  Validated: `curl -N` on `/chat/` and `/voice/` shows real token-by-token SSE frames with
+  correct `transcript`/`token`/`done` shapes and correct `elapsed_s`; a real headless-Chrome
+  interaction (typed a message, screenshot mid-generation) shows the bubble growing live
+  ("1. **Recherche de fichiers**... 2. **", cut mid-sentence, send button correctly disabled) —
+  confirms the actual browser experience, not just the wire format. `tests.sh` 5/5 +
+  `test_fixes.py` unaffected (CLI/voice/wake never set `_STREAM_SINK`, so `_emit_stream()` is a
+  no-op there exactly as before).
+- v12.13: **real bug found via user testing of `--serve`** — meta/identity questions about the
+  agent itself ("Qui es-tu ?", "Que peux-tu faire ?", "Comment ça marche ?", "What can you do?")
+  were silently swallowed by the `greeting` fast-path, returning a canned "Bonjour ! Comment
+  puis-je t'aider ?" instead of a real answer. Root cause verified empirically: these queries
+  scored 0.52-0.66 for `greeting`, a range that **fully overlaps** genuine greeting scores
+  (0.51-0.97) — no threshold could separate them, because none of the 4 router categories
+  represented "questions about the agent," so the classifier was forced toward the nearest
+  existing bucket (greeting, since both are short/casual/conversational). **Fix**: added a 5th
+  `ROUTER_UTTERANCES` category, `'other'` (~30 identity/capability/meta/off-topic utterances,
+  FR+EN), which is **never fast-pathed** — `handle_turn()`'s gate already only checks
+  `cat in ('greeting', 'time_date')`, so anything classified `'other'` falls through to the
+  normal LLM path with zero code changes beyond adding the utterances. Re-verified the exact
+  failing queries now score 0.79-0.98 for `'other'` and correctly reach the LLM for a real
+  answer; a 24-query spot-check across all 5 categories (including the previously-known
+  informal-greeting→time_date edge case) scored 100% with no regression on existing categories.
+  `tests.sh` 5/5 + `test_fixes.py` unaffected. Lesson for next time: the 100-query benchmark that
+  validated the router (see v12.8/docs/TECH_WATCH.md) never included out-of-domain "none of the
+  above" queries — only variations of the 4 known intents — so this failure mode was invisible
+  until real usage surfaced it. Any future router category work should add adversarial
+  out-of-domain test cases, not just more paraphrases of in-domain ones.
+- v12.12: the `--serve` surface is now **English-only** (user-specified: code and anything shown
+  to the user is written in English) — `web/index.html` text ("Type a message…", "Recording…
+  tap again to stop", "Microphone unavailable: …", "Network error: …", token prompt, status
+  text "online"/"remote"/"offline", empty-state copy) and the API's `message`/`data.error`
+  strings (`"System operational"`, `"Response generated"`, `"Audio transcribed and processed"`,
+  `"Conversation reset"`). **Error `message` simplified to always be the single literal
+  `"An error occurred"`** (per the user's own example) — `_err(code, error)` now takes just the
+  `data.error` detail, no separate per-call message. This is scoped to the new `--serve`/web
+  code only; the rest of `agent.py` (CLI/voice/wake prints, comments, and the LLM's own
+  conversational replies — still French per the SYSTEM prompt's "Reply in French" rule) is
+  untouched — these are different layers (UI/API literals vs. the agent's spoken language).
+  **Visual redesign** (`web/index.html`, user feedback: previous version "not cool"): SVG icons
+  replace emoji for mic/send (crisper, consistent cross-platform), indigo gradient accent
+  (`#6366f1`→`#4f46e5`) instead of flat blue, animated 3-dot typing indicator instead of a
+  static "…", a welcoming empty-state (logo badge + "Hi, I'm MATATA"), message fade/rise-in
+  animation, and a card-with-shadow layout on wider viewports (≥760px) vs. edge-to-edge on
+  mobile. Verified via headless Chrome screenshots (empty state + a populated conversation with
+  all 4 bubble styles) — **note for future verification**: `--screenshot` alone can capture
+  mid-animation (looked washed-out at first, bubbles pale instead of vivid), fixed by adding
+  `--virtual-time-budget=2000` so CSS animations/timers settle before the capture — not a real
+  bug, a headless-capture quirk. `tests.sh` 5/5 + `test_fixes.py` unaffected (no agent_turn/CLI
+  code touched).
+- v12.11: `--serve` endpoints now follow a fixed convention (user-specified): **POST paths end
+  in `/`** (`/chat/`, `/voice/`, `/reset/`), **GET paths don't** (`/health`, `/`). Every JSON
+  response is `{"ok": bool, "message": str, "data": {...}}` — on success `data` holds the real
+  payload (e.g. `{"reply", "role"}` for `/chat/`); on error `ok=false`, `message` is **always
+  generic** (e.g. "Requête invalide", "Non autorisé", "Introuvable"), and the specific detail
+  goes in `data.error`. `web/index.html` updated to match (`postJSON('/chat/', ...)`,
+  `fetch('/voice/', ...)`, reads `json.data.reply`/`json.data.error` instead of top-level
+  fields). `GET /` keeps serving the raw HTML page unchanged — the envelope only applies to the
+  JSON API. Re-validated: `curl` on all 5 cases (health, chat success, chat missing-field error,
+  reset, voice round-trip) + a path without the trailing slash correctly 404s. `tests.sh` 5/5 +
+  `test_fixes.py` unaffected (no agent_turn/CLI code touched, only `run_server()`).
+- v12.10: first PC interface for `--serve`. `GET /` now serves `web/index.html` — a single
+  self-contained static file (inline CSS/JS, zero external dependency, zero build step, no
+  framework/library — "ce qui se fait déjà, pas réinventer la roue" per the user's own framing):
+  text input + send button, chat log with styled bubbles (user/assistant/tool-refusal/voice-
+  transcript, 4 distinct visual classes), a mic button. Chosen over a native app (Electron/Tauri)
+  because the exact same static page + API will serve Phase 1 mobile later via Tailscale with
+  zero rework — a native app would have to be rebuilt per platform for no real gain here.
+  **Mic button**: records via the browser's `MediaRecorder` (webm/opus), uploads to new
+  `POST /voice` endpoint. Server converts webm→16kHz mono WAV via `ffmpeg` (already a project
+  dependency, used elsewhere for `--wake` beep generation) then reuses the existing
+  `transcribe_audio()` (same whisper.cpp pipeline as `--voice`/`--wake`) — zero new STT code.
+  Reply is **text-only** for this version (user's explicit choice: simpler to ship now, voice-out
+  via Piper streamed back to the browser left for later if ever needed). `--serve` now also
+  starts `whisper-server` at startup (previously only `--voice`/`--wake` did) so `/voice` doesn't
+  reload the whisper model on every request.
+  Validated: `curl` round-trip on `/voice` with a synthetic Piper-generated clip converted to
+  webm (simulating what a real browser microphone would send) — transcribed correctly, routed
+  correctly, correct reply. Visually verified via headless Chrome screenshots: empty state (health
+  dot, model name, input bar) and a populated conversation with all 4 bubble styles — both render
+  as intended. `tests.sh` 5/5 and `test_fixes.py` re-confirmed unaffected.
 - v12.9: first Phase 1 web/mobile step — `--serve` mode (`MATATA_SERVE=1` or `--serve` flag)
   runs a minimal stdlib-only HTTP API (`http.server.ThreadingHTTPServer`, zero new dependency —
   the need doesn't justify FastAPI/aiohttp per the "gain réel mesuré" rule) instead of the
