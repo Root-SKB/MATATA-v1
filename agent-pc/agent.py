@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Agent PC v12.7 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
+"""Agent PC v12.8 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
 
-import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama
+import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
 from collections import deque
 from datetime import datetime
@@ -415,10 +415,7 @@ def hands_free_loop(messages, show_timer):
             actif_until = time.time() + ACTIF_S
             print('🔄 Reset.\n')
             return True
-        messages.append({'role': 'user', 'content': inp})
-        messages[:] = trim_messages(messages)
-        log_event('user', inp)
-        agent_turn(messages, show_timer, _COMMAND_HISTORY)
+        handle_turn(inp, messages, show_timer)
         print()
         actif_until = time.time() + ACTIF_S     # la conversation reste ouverte
         refractory = time.time() + 1.5
@@ -749,6 +746,179 @@ INCOMPLETE_PATTERNS = re.compile(
 # d'attendre la fin de toute la réponse.
 SPEAK_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
+# === PRE-LLM ROUTER (v12.8, patron validé contre Laya + semantic-router/FastEmbed,
+# voir docs/TECH_WATCH.md) ===
+# Routeur par similarité d'embeddings (FastEmbed/ONNX, ~222Mo de deps, zéro torch)
+# qui court-circuite l'appel LLM pour les 2 intentions les plus simples et SANS
+# RISQUE (greeting/time_date — jamais d'action destructrice, juste une réponse
+# directe). system_stats/file_search sont classifiés mais TOUJOURS délégués au
+# LLM : le routeur ne fait que catégoriser, il n'extrait pas les arguments de la
+# commande réelle à exécuter (quel dossier, quelle catégorie de stats...).
+# Algo = celui validé empiriquement (92.0% accuracy / 5.2ms sur 100 requêtes,
+# contre 84.0% / 216.4ms pour Laya CPU) : top-5 plus proches voisins toutes
+# catégories confondues, regroupés par route, moyenne par route, meilleure route
+# retenue — reproduit fidèlement `SemanticRouter(top_k=5, aggregation='mean')`
+# sans dépendre du framework `semantic-router` (ZERO framework, cf. AGENTS.md).
+ROUTER_ENABLED = os.environ.get('MATATA_ROUTER', '1') != '0'
+ROUTER_THRESHOLD = float(os.environ.get('MATATA_ROUTER_THRESHOLD', '0.5'))
+ROUTER_TOPK = 5
+ROUTER_MODEL_NAME = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+
+ROUTER_UTTERANCES = {
+    'greeting': [
+        "Salut", "Bonjour", "Coucou", "Ça va ?", "Bonsoir",
+        "Salutations", "Hey", "Bien le bonjour à vous", "Hola",
+        "Content de te voir", "Enchanté", "Je te salue", "Un petit coucou",
+        "Hi", "Hello there", "Hiya there", "Morning", "Evening",
+        "Nice to meet you", "Good to see you", "What's happening",
+        "How's life", "How's everything", "You doing good",
+        "Alright mate", "Yo man", "Bien ou bien", "Tranquille ?",
+        "Ça farte", "Ça dit quoi", "Alors, ça va ?",
+    ],
+    'time_date': [
+        "Quelle heure est-il ?", "Quelle est l'heure actuelle",
+        "T'as l'heure ?", "File-moi l'heure", "Indique-moi l'heure svp",
+        "Quel jour on est ?", "Quelle est la date aujourd'hui",
+        "On est quel mois ?", "C'est quel jour de la semaine",
+        "Rappelle-moi la date", "What's the hour right now",
+        "Got the time?", "Tell me the hour", "What time do we have",
+        "Which day is it", "What's the date today", "Tell me today's date",
+        "What month are we in", "Give me the current time",
+    ],
+    'system_stats': [
+        "Combien de RAM il me reste", "Quelle quantité de mémoire est libre",
+        "Espace disque total disponible", "Combien d'espace de stockage j'ai",
+        "Quel processeur j'ai", "Quelle marque de CPU",
+        "Combien de cœurs sur ma puce", "À combien tourne mon processeur",
+        "Montre les stats de la machine", "Affiche les performances système",
+        "Décris-moi la configuration matérielle", "Quel est le pourcentage d'utilisation processeur",
+        "Mon disque est rempli à quel niveau", "Quelle est la chaleur du CPU",
+        "Niveau de batterie restant", "Durée depuis le dernier démarrage",
+        "Quelle est la charge globale du système", "What CPU temp am I at",
+        "Free memory amount please", "Processor load percentage",
+        "Show me the machine specs", "How many processor cores total",
+        "Status of the whole system", "Total available storage",
+        "Overall free space on drive", "Full storage capacity value",
+        "Memory consumption check", "Which processor model is installed",
+        "Battery percentage left", "System uptime duration",
+        "Current system load",
+    ],
+    'file_search': [
+        "Cherche des PDF dans le dossier Documents", "Retrouve mes clichés de vacances",
+        "Affiche les scripts Python du projet", "Trouve mes fichiers Word",
+        "Localise mes tableurs Excel", "Dégote tous les fichiers compressés .zip",
+        "Trouve-moi un fichier qui s'appelle facture", "Fais voir les fichiers récents",
+        "Fouille dans le dossier Bureau", "Où sont stockées mes captures d'écran",
+        "Localise rapport.pdf", "Trouve mes fichiers au format texte",
+        "Affiche les fichiers changés aujourd'hui", "Trie les fichiers par date de modif",
+        "Combien de morceaux de musique j'ai", "Nombre de films dans le dossier vidéos",
+        "Taille du dossier Téléchargements", "Poids du dossier Téléchargements",
+        "Quel est le volume du dossier Musique", "Nombre total de PDF stockés",
+        "Combien de fichiers dans le dossier Bureau", "Nombre de photos dans la galerie",
+        "Quel espace occupent mes vidéos", "Poids en Go du dossier Projets",
+        "Volume total des fichiers photo", "Nombre de sous-dossiers dans Images",
+        "Locate my audio tracks", "Find PDF documents inside Documents folder",
+        "Get all compressed zip archives", "Search for the file called report",
+        "Look inside downloads for invoice files", "Show my Word documents list",
+        "Where can I find my screen captures", "Display files above 1GB in size",
+        "Size of the Downloads directory", "Count of videos stored",
+        "Total number of PDF documents", "Space taken by video files",
+        "Size of the Music directory", "Total size of Documents folder",
+        "Count files inside Desktop folder", "Number of subfolders in Documents",
+    ],
+}
+
+_router_model = None
+_router_vecs = None  # list[(categorie, vecteur unitaire numpy)], précalculé 1x
+
+def _get_router():
+    global _router_model, _router_vecs
+    if _router_model is None:
+        from fastembed import TextEmbedding
+        import numpy as np
+        _router_model = TextEmbedding(model_name=ROUTER_MODEL_NAME)
+        _router_vecs = []
+        for cat, utts in ROUTER_UTTERANCES.items():
+            for vec in _router_model.embed(utts):
+                v = np.asarray(vec)
+                _router_vecs.append((cat, v / np.linalg.norm(v)))
+    return _router_model, _router_vecs
+
+def route_intent(text):
+    """Classifie l'intention en (categorie, score) par similarité d'embeddings,
+    ou (None, 0.0) si désactivé (MATATA_ROUTER=0) ou en cas d'erreur (fastembed
+    non installé, etc.) — dans ce cas l'appelant doit retomber sur le LLM."""
+    if not ROUTER_ENABLED:
+        return None, 0.0
+    try:
+        import numpy as np
+        model, vecs = _get_router()
+        q = np.asarray(list(model.embed([text]))[0])
+        q = q / np.linalg.norm(q)
+        sims = [(cat, float(v @ q)) for cat, v in vecs]
+        sims.sort(key=lambda x: x[1], reverse=True)
+        top = sims[:ROUTER_TOPK]
+        by_route = {}
+        for cat, s in top:
+            by_route.setdefault(cat, []).append(s)
+        best_cat = max(by_route, key=lambda c: sum(by_route[c]) / len(by_route[c]))
+        best_score = sum(by_route[best_cat]) / len(by_route[best_cat])
+        return best_cat, best_score
+    except Exception:
+        return None, 0.0
+
+GREETING_REPLIES_FR = [
+    "Salut ! Comment puis-je t'aider ?",
+    "Bonjour ! Que puis-je faire pour toi ?",
+    "Coucou ! Je t'écoute.",
+]
+GREETING_REPLIES_EN = [
+    "Hi! How can I help?",
+    "Hello! What can I do for you?",
+    "Hey! I'm listening.",
+]
+
+def _fast_reply(messages, show_timer, reply, t0):
+    """Répond directement sans passer par le LLM (fast-path routeur). t0 = début
+    du tour (avant route_intent), pour afficher le vrai temps écoulé."""
+    ts = f'  ⏱️ {time.time()-t0:.3f}s (routeur)' if show_timer else ''
+    print(f'\U0001f916 {reply}{ts}\n')
+    speak(reply)
+    messages.append({'role': 'assistant', 'content': reply})
+    log_event('resp', reply[:300])
+
+def _fast_greeting(messages, show_timer, t0):
+    lang = _voice_for(messages[-1]['content'])
+    reply = random.choice(GREETING_REPLIES_EN if lang == 'en' else GREETING_REPLIES_FR)
+    _fast_reply(messages, show_timer, reply, t0)
+
+def _fast_time_date(messages, show_timer, t0):
+    lang = _voice_for(messages[-1]['content'])
+    now = datetime.now()
+    if lang == 'en':
+        reply = f"It's {now.strftime('%H:%M')}, on {now.strftime('%d/%m/%Y')}."
+    else:
+        reply = f"Il est {now.strftime('%Hh%M')}, nous sommes le {now.strftime('%d/%m/%Y')}."
+    _fast_reply(messages, show_timer, reply, t0)
+
+def handle_turn(inp, messages, show_timer):
+    """Ajoute le message utilisateur, tente le fast-path routeur pré-LLM
+    (greeting/time_date uniquement — system_stats/file_search passent toujours
+    par le LLM, le routeur ne fait que classifier, pas d'extraction d'arguments),
+    sinon délègue à agent_turn. Point d'entrée partagé --voice/--wake/texte."""
+    t0 = time.time()
+    messages.append({'role': 'user', 'content': inp})
+    messages[:] = trim_messages(messages)
+    log_event('user', inp)
+    cat, score = route_intent(inp)
+    if score >= ROUTER_THRESHOLD and cat == 'greeting':
+        _fast_greeting(messages, show_timer, t0)
+        return
+    if score >= ROUTER_THRESHOLD and cat == 'time_date':
+        _fast_time_date(messages, show_timer, t0)
+        return
+    agent_turn(messages, show_timer, _COMMAND_HISTORY)
+
 def trim_messages(msgs):
     if len(msgs) <= MAX_HISTORY + 1: return msgs
     return [msgs[0]] + msgs[-(MAX_HISTORY):]
@@ -1003,7 +1173,19 @@ def main():
                     options={'num_predict':1}, **THINK_KW)
     except: pass
 
-    print(f'\n\U0001f916 Agent PC v12.7 \u2014 {MODEL}' +
+    # Routeur pré-LLM (v12.8) : précharge le modèle d'embeddings maintenant
+    # (coût ponctuel ~3-4s) pour que la première question de l'utilisateur
+    # bénéficie déjà du fast-path, au lieu de payer ce coût en plein milieu
+    # de la conversation.
+    if ROUTER_ENABLED:
+        print('   ⏳ Chargement du routeur...', end=' ', flush=True)
+        try:
+            _get_router()
+            print('✅')
+        except Exception:
+            print('⚠️ indisponible, LLM seul')
+
+    print(f'\n\U0001f916 Agent PC v12.8 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')
@@ -1059,10 +1241,7 @@ def main():
                 print('Usage: langue fr|en|auto\n')
             continue
         if not inp: continue
-        messages.append({'role':'user','content':inp})
-        messages = trim_messages(messages)
-        log_event('user', inp)
-        agent_turn(messages, show_timer, _COMMAND_HISTORY)
+        handle_turn(inp, messages, show_timer)
     finally:
       _whisper_server_stop()
 

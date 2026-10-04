@@ -5,3 +5,7 @@ ollama>=0.6.2,<0.7
 # piper-tts>=1.2.0                # synthèse TTS in-process (PiperVoice)
 # openwakeword>=0.5.2             # détection du mot-clé MATATA (--wake)
 # (client whisper-server = urllib stdlib, aucune dépendance)
+
+# Routeur pré-LLM (v12.8) — optionnel, import dynamique dans agent.py.
+# Désactivable sans rien désinstaller via MATATA_ROUTER=0.
+# fastembed>=0.3.0                # embeddings ONNX, zéro torch (~222Mo)

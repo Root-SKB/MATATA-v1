@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (single file, current version: v12.7)
+- agent.py — Main agent script (single file, current version: v12.8)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -27,8 +27,31 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
 
-## Current Version: v12.7 (streaming TTS phrase-by-phrase)
+## Current Version: v12.8 (pre-LLM router, fast-path greeting/time_date)
 3 tools: run_shell, search_files, system_info
+- v12.8: pre-LLM intent router (`route_intent()`) using FastEmbed (ONNX, ~222MB, zero torch)
+  embeddings + a hand-rolled top-5-nearest-neighbor/mean-by-route classifier — NOT the
+  `semantic-router` package itself (ZERO frameworks constraint; the package was only used to
+  validate the approach empirically, see docs/TECH_WATCH.md: 92.0% accuracy / 5.2ms vs Laya's
+  84.0% / 216.4ms on a 100-query benchmark). Classifies every turn into
+  greeting/time_date/system_stats/file_search, but only **greeting and time_date** trigger a
+  fast-path (`handle_turn()` → `_fast_greeting()`/`_fast_time_date()`) that skips Ollama entirely
+  and replies directly (canned greeting / `datetime.now()`-derived time+date) when the top score
+  clears `MATATA_ROUTER_THRESHOLD` (default 0.5, same threshold validated in testing).
+  `system_stats`/`file_search` are classified but always deferred to the normal LLM+tool-calling
+  path unchanged — the router only categorizes, it cannot extract the actual command arguments
+  (which folder, which stat), so bypassing the LLM for those would require guessing parameters
+  it doesn't have. Measured impact: "Hi"/"Quelle heure ?" go from ~12-22s (LLM) to ~0.03s
+  (post-warm-up) — tests.sh 5/5 unchanged, tests 3-5 untouched. Known residual risk: ~4% of
+  queries in the 100-query benchmark get a wrong-but-harmless fast reply (informal phrasings
+  like "Quoi de neuf ?"/"What's up" misread as time_date instead of greeting — never a security
+  or destructive-action risk, since the fast-path only ever replies with text or a hardcoded
+  `datetime.now()` read, it never runs a user-influenced shell command).
+  Escape hatch: `MATATA_ROUTER=0` disables the router entirely (falls back to 100% pre-v12.8
+  behavior); `MATATA_ROUTER_THRESHOLD` tunes the confidence bar. Router model/utterance
+  embeddings are precomputed once at startup (`⏳ Chargement du routeur...`, ~3-4s one-time ONNX
+  warm-up, same pattern as the whisper-server startup message) so the first real user turn
+  already benefits from the fast-path instead of absorbing that cost mid-conversation.
 - v12.7: sentence-by-sentence TTS streaming (pattern extracted from LocalVox,
   github.com/YaPanBytes/LocalVox, see docs/TECH_WATCH.md). `SPEAK_SENTENCE_RE` splits the
   streamed LLM text on sentence boundaries and calls `speak()` per completed sentence instead
