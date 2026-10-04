@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (currently a single file, current version: v12.14)
+- agent.py — Main agent script (currently a single file, current version: v12.17)
 - web/index.html — minimal chat UI served by `--serve` (`GET /`), self-contained (inline CSS/JS)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
@@ -30,8 +30,168 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     # API web minimale (Phase 1), N2/N3 refusés à distance :
     MATATA_SERVE_TOKEN=change-me python3 agent-pc/agent.py --serve --timer
 
-## Current Version: v12.14 (real streaming to the web UI: SSE)
-3 tools: run_shell, search_files, system_info
+## Current Version: v12.17 (3 real bugs found via production --serve usage, all fixed)
+3 core tools (run_shell, search_files, system_info) + web_search gated dynamically
+- v12.17: **user ran `--serve` for real use** (not a scripted test) and pasted the full
+  terminal + web UI transcript for analysis. Found and fixed 3 concrete bugs, all
+  reproduced in isolation before fixing (not just inferred from the transcript):
+  1. **`--serve` + an `'unknown'`-classified command could freeze the entire server.**
+     The model hallucinated a non-existent binary (`newslookup -q "..."`, trying to check
+     a football score) in response to a query that had nothing it could actually answer —
+     `classify_command()` correctly returned `'unknown'`, but the dispatch
+     (`elif lvl in ('critical', 'write') and IS_REMOTE:`) never covered `'unknown'`, so it
+     fell to the same `else: input(prompt)` branch as a local N2/N3 confirmation — a
+     **blocking call on the server process's own terminal stdin**, not reachable by the
+     remote/web client. Worse: `run_server()` calls `handle_turn()` under a shared `lock`
+     (`with lock: handle_turn(...)`), so this one blocked `input()` froze **every** other
+     `/chat/`/`/voice/` request from any client until someone typed into that terminal.
+     Root-caused exactly: the transcript's `"Cancelled"` reply (after 16.7s, visible in
+     the web UI) matches `input()` reading an empty/stray line already sitting in stdin
+     (not the `o` the user typed afterward in the terminal — by then the request had
+     already resolved, and that stray `o` was left sitting in the buffer for whatever
+     `input()` call might come next). **Fixed**: `elif lvl in ('critical', 'write',
+     'unknown') and IS_REMOTE:` — `unknown` now gets the same clean `REFUSED: ...` tool
+     message as N2/N3, zero blocking. Verified with a direct `agent_turn()` call
+     (`IS_REMOTE=True`, mocked `_ollama_stream` returning a `run_shell` tool_call for the
+     exact `newslookup` command) — confirms the refusal path triggers, no `input()` call.
+  2. **`handle_search_files()` keyword parsing broke on a leading wildcard.** The model
+     passed `name="*.mkv"` (natural thing to try when asked "how many .mkv files"), and
+     `re.split(r'[\s*,;|]+', name)[0]` treated `*` as a *delimiter*, splitting `"*.mkv"`
+     into `['', '.mkv']` and keeping only the empty first element — the function then
+     reported "Error: provide a keyword" even though a perfectly good keyword was given.
+     Reproduced directly: `re.split(r'[\s*,;|]+', '*.mkv')[0]` → `''`. This wasted 2 of the
+     turn's 5 steps before the model gave up on `search_files` and fell back to raw
+     `run_shell`. **Fixed**: removed `*` from the split character class (kept
+     whitespace/comma/semicolon/pipe as word separators) and changed the trim to
+     `.strip('*.')` — `"*.mkv"` → `"mkv"` correctly, same as `"mkv"`/`".mkv"`/`"video*"`.
+  3. **`handle_search_files()` broke on a literal `~` in `search_dir`.** The model passed
+     `search_dir="~/Downloads"`; the code did `shlex.quote(search_dir)` on the raw string
+     — but `shlex.quote('~/Downloads')` produces `'~/Downloads'` (single-quoted), and a
+     shell **never expands `~` inside quotes**, so the generated `ls '~/Downloads'` failed
+     with "No such file or directory" even though `~/Downloads` exists (proven by the very
+     next step: the model typed `ls -a ~/Downloads` directly via `run_shell`, unquoted,
+     and it worked fine and listed dozens of files). Reproduced directly with a standalone
+     `subprocess.run("ls '~/Downloads'", shell=True)` → identical error. Only the
+     *default* value (`os.path.expanduser('~')`) was ever expanded — a value the model
+     supplied explicitly, as it did here, was not. **Fixed**: wrap the whole
+     `args.get('search_dir', '~')` in `os.path.expanduser(...)` before quoting, in both
+     the no-keyword error path and the main `find` path.
+  **Validated**: all 3 fixes reproduced the exact failing case from the user's real
+  session and confirmed fixed (`handle_search_files({'name': '*.mkv', 'search_dir':
+  '~/Downloads'})` now returns the real file directly instead of an error; a live end-to-
+  end run of "Y a-t-il des fichiers mkv dans mon dossier Downloads ?" resolved in 1 step/
+  27s instead of the original session's 5 steps/71s). `tests.sh` 5/5, `test_fixes.py`
+  unaffected. Also found but **not yet fixed** (lower priority, UX gap not a bug): the web
+  UI has no equivalent to the CLI's special text commands (`reset`/`quit`) — `/clear`,
+  `exit`, `bye` typed in the browser chat are just normal messages, subject to router
+  misclassification, and never actually reset server-side conversation state (only
+  `POST /reset/` does that).
+  **4 more inconsistencies found in a self-audit pass** (user: "vérifie bien il semble
+  avoir toujours des incohérence" — right to push back, this round wasn't from a pasted
+  session, it's from re-reading the code and docs critically after the first 3 fixes):
+  (4) the CLI startup banner's tools line (`🔍 search | 📊 sys | 📋 shell | 🌐 web...`,
+  added alongside `web_search`) was **dead code for `--serve`** — the `SERVE` branch of
+  `main()` returns before ever reaching that `print()`, so the exact mode the user was
+  testing never showed whether `web_search` was active. Fixed by printing the same line
+  inside the `SERVE` branch too, right before `run_server()`. (5) the `--serve` startup
+  message said `"N2/N3 toujours refusés à distance"`, now stale since fix #1 also refuses
+  `unknown` — updated the wording. (6) `AGENTS.md`'s router bullet still said "5 categories
+  since v12.13" and listed `greeting/time_date/system_stats/file_search/other`, missing the
+  `web_search` category added in v12.16 — corrected to 6. (7) **a real bug, not just a doc
+  staleness**: the `SERVE` branch calls `run_server(messages, show_timer)` then
+  `_whisper_server_stop()` as two plain sequential statements, not a `try/finally` — if
+  `run_server()` raises (confirmed reproducible: start a dummy listener on port 8765 first,
+  then launch `--serve`, which crashes with `OSError: Address already in use`), the
+  whisper-server child is **never terminated**, leaking a process bound to port 18080
+  silently. Fixed by wrapping `run_server(messages, show_timer)` in `try: ... finally:
+  _whisper_server_stop()`. Reproduced the exact crash scenario before AND after the fix:
+  before, `pgrep -af whisper-server` showed an orphaned process after the crash; after,
+  nothing. `AGENTS.md` version range for the "Web server + UI" bullet (`v12.9-v12.15`) was
+  also stale, now `v12.9-v12.17`. **Lesson**: a pasted real-world session surfaces bugs that
+  trigger during actual use, but a deliberate re-read of the diff + docs after the fact
+  catches a different class — dead code paths and doc/code drift that no single test
+  exercises. Both passes are worth doing, neither replaces the other.
+- v12.16: **re-tested empirically whether the long-standing "max 3 tools" constraint
+  still held**, following a round of web research (multimodal/websearch/phone/more-tools/
+  speak-realtime) that found a paper (arXiv:2411.15399) documenting tool-count degradation
+  only past 20-25 functions in general — suggesting our 3-tool ceiling might be stricter
+  than necessary, possibly an artifact of our specific config rather than a hard model limit.
+  **Test**: added a 4th tool (`web_search`, via `ddgs`/DuckDuckGo, zero API key) always
+  present in `TOOLS`, ran `tests.sh` + 3 extra standalone repeats of the hardest query
+  ("Combien de séries avec taille ?", historically the most variable test). **Result: real
+  measurable degradation** — with 4 tools always exposed, 1/4 runs produced a raw
+  `<tool_call>{...}</tool_call>` text blob instead of a real tool call (the classic
+  empty-response-trigger retry failure mode, see v10.3), and 2/3 standalone runs wasted a
+  step calling `system_info(cpu)` on a query that had nothing to do with system stats,
+  before eventually finding the right `find`+`du` command. With only 3 tools (`MATATA_
+  WEBSEARCH=0`), 3/3 runs went straight to the correct command in step 1. **Conclusion**:
+  the "3 tools" ceiling is real for THIS model/config on hard multi-step queries, even
+  though the literature's 20-25 threshold is about aggregate benchmark averages, not worst-
+  case reliability on a specific small model via Ollama native tool calling.
+  **Fix, not retreat**: rather than abandoning `web_search`, implemented the "dynamic tool
+  retrieval" pattern also surfaced by the same research round (same arXiv paper's core
+  idea) — reusing the **existing** `route_intent()` FastEmbed/k-NN router (v12.8) instead of
+  a new dependency: `CORE_TOOLS` (the proven 3) are always exposed; `web_search` is added to
+  the list passed to `ollama.chat(tools=...)` **only for the one call** where a new 6th
+  router category (`'web_search'`, ~30 FR+EN utterances: weather/news/prices/facts/sports)
+  scores above `MATATA_ROUTER_THRESHOLD`. Every other turn (including the hard series/music
+  tests) gets exactly the same 3-tool prompt that was already proven reliable — **zero
+  change in behavior for 100% of pre-v12.16 use cases**, `web_search` only enters the
+  picture for turns that actually need it. Fallback: if `MATATA_ROUTER=0`, there's no way to
+  classify dynamically, so `web_search` falls back to always-on (accepting the measured
+  risk) rather than silently disappearing — documented tradeoff, not a bug.
+  **Also found + fixed while implementing** (contre-vérification pass before coding, 2
+  parallel sub-agents — one re-reading `agent.py` itself, one re-verifying the research's
+  riskiest external claims): (1) a duplicated tool-dispatch bug — the rare "retry without
+  tools" code path (empty-response fallback) had the 3 tool branches but **no `else`
+  fallback**, unlike the main dispatch which already had one; an unrecognized `fn_name`
+  there would silently break the conversation protocol. Fixed by adding the same `else`
+  there. (2) The externally-recommended multimodal candidate (`qwen2.5vl:7b`) turned out to
+  **not support Ollama native tool calling at all** (confirmed: no VLM on Ollama does except
+  `qwen3-vl:8b-instruct`, which does support tools+vision+thinking together) — corrected in
+  `docs/TECH_WATCH.md`, not implemented this round (separate task).
+  **Known limitation**: the model can still produce an answer not actually grounded in the
+  DuckDuckGo snippets returned (no citation/grounding enforcement) — observed once in manual
+  testing (a fabricated sports fact). Treat `web_search` answers like any other LLM output,
+  not a verified-truth guarantee.
+  Validated: `tests.sh` 5/5 (test 5 back to single-step/reliable), `test_fixes.py` unaffected,
+  manual end-to-end test of `web_search` itself (weather query → correct tool call → real
+  DuckDuckGo results → reasonable answer; sports query → tool worked correctly, answer
+  hallucinated — see limitation above), `MATATA_WEBSEARCH=0` and `MATATA_ROUTER=0` toggles
+  both verified to behave as designed (banner line reflects actual tool exposure in each
+  case).
+- v12.15: **closes the reactivity gap deferred at the end of v12.14** (user: "C'est pas exactement
+  au point niveau reactivité que je cherche mais on pourrait améliorer après" → later: "Fais-le
+  maintenant"). Root cause: for tool-calling turns (the majority of real queries), the web UI
+  showed static typing dots with zero feedback during the whole search_files/system_info/run_shell
+  execution window — only once the final answer started streaming did anything move. **Fix**: a
+  new `status` SSE event type, emitted via the existing `_emit_stream()` hook right next to the
+  terminal's own progress prints — `search_files` → `Searching for "<name>"...`, `system_info` →
+  `Checking system info (<category>)...`, `run_shell` → the model's own `reason` field when
+  provided, else `Running: <cmd>` as a fallback for auto-executed N1 reads with no reason.
+  `web/index.html`'s typing indicator gained a `.typing-label` span (hidden via `:empty` until a
+  status arrives) next to the bouncing-dots span; `setTypingStatus()` fills it, and
+  `handleTurnEvents()` routes `ev.type === 'status'` to it (only before the first `token` event —
+  once real text starts streaming the label is irrelevant, the bubble itself takes over).
+  **Bug found while verifying this**: running `--serve` with stdout redirected to a file (the
+  natural way to test/operate it headless) made it LOOK hung forever right after "Chargement du
+  routeur..." — spent significant debugging effort chasing a suspected recurrence of the v12.9
+  onnxruntime thread-pool deadlock (isolated repros of the exact same router-load sequence were
+  all fast, ~4s) before `faulthandler.dump_traceback_later(15, exit=True)` proved the process was
+  already parked in `httpd.serve_forever()`, not stuck in startup at all. Root cause: `print()`
+  without `flush=True` on the router's `✅` and on the two startup banner lines right before
+  `serve_forever()` — fine for an interactive TTY (line-buffered by default) but silently held in
+  Python's full-buffering mode whenever stdout is a pipe/file, which is exactly how `--serve` would
+  run as a background/systemd-style service. Fixed by adding `flush=True` to those three prints.
+  Not a functional bug (every request was already served correctly the whole time, confirmed via
+  curl against the "hung" instance) but a real operability trap for anyone who redirects `--serve`
+  output to a log file. **Lesson for next time**: when a background process seems to hang, check
+  with `faulthandler.dump_traceback_later()` (or `py-spy dump`) before assuming the suspected prior
+  bug recurred — a silent stdout-buffering gap looks identical to a real hang from the outside.
+  Validated: `curl -N /chat/` on a system_info query shows `status` → `token`×N → `done` in order;
+  a run_shell query (reason-driven) shows the model's own reason as the status text; full startup
+  banner now appears immediately in a redirected log. `tests.sh` 5/5 + `test_fixes.py` unaffected
+  (CLI/voice/wake never set `_STREAM_SINK`, so `_emit_stream()` stays a no-op there as before).
 - v12.14: **3 UX issues reported by the user while testing `--serve`**, all three caused by the
   same root issue — `/chat/`/`/voice/` waited for the ENTIRE turn to finish before sending
   anything back, so the browser saw nothing until the whole reply (and, for voice, the whole
@@ -320,7 +480,14 @@ When the model wraps commands as `/bin/bash -c "..."`, whitelist marks [unknown]
 confirmation prompt. Safe by design, just verbose.
 
 Bugs 1, 2 fixed v10.1; Bug 3 fixed v10.2; retry dead-end fixed v10.3. BUG 4 (slow CPU
-inference) resolved in practice by iGPU offload — no longer tracked as a bug.
+inference) resolved in practice by iGPU offload — no longer tracked as a bug. BUG 6
+(`search_files` keyword parsing broke on a leading wildcard, e.g. `"*.mkv"` → empty
+keyword) and BUG 7 (`search_files` `search_dir` with a literal `~` quoted before
+expansion → shell never expands it → false "No such file or directory") both fixed v12.17,
+found via a real `--serve` session the user pasted for analysis — see v12.17 changelog
+above for full root-cause detail. A 3rd issue found in the same session, the `--serve`
+server-freeze on an `'unknown'`-classified command, is a safety/reliability bug not a
+tool-behavior one — also fixed v12.17, see the Safety section of `AGENTS.md`.
 
 ## CONSTRAINTS
 - ZERO cloud at runtime: everything local. (README mentions a future "Cloud Mentor"
@@ -336,7 +503,7 @@ inference) resolved in practice by iGPU offload — no longer tracked as a bug.
   flag/env var without breaking the rest, and its implementation must be swappable (different
   model/lib/approach) without rewriting other components — pattern already followed
   (MATATA_ROUTER, MATATA_WHISPER_VAD, MATATA_MODEL, VOICE_LANG), keep following it for new work.
-- Max 3 tools: more caused empty responses historically.
+- Max 3 tools exposed per call: more caused empty/degraded responses, re-confirmed empirically v12.16. A 4th+ tool is acceptable only if dynamically gated per-call (see `web_search`/CORE_TOOLS pattern), never always-on.
 
 ## MODEL CONFIG (in agent.py, near top)
 - MODEL = env MATATA_MODEL or 'qwen3:8b'

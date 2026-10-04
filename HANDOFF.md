@@ -223,6 +223,80 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
     une vraie interaction Chrome headless pilotée en CDP (bulle capturée en train de grossir en
     plein milieu de génération, bouton d'envoi désactivé). `tests.sh` 5/5 + `test_fixes.py`
     inchangés. Détail complet dans `docs/TECH_WATCH.md`.
+12. **`status` events + fix stdout flush (04/10/2026, v12.15)** — ferme le trou de réactivité
+    laissé en suspens en v12.14 ("Fais-le maintenant") : pour un tour avec tool call, rien ne
+    bougeait côté web pendant toute la fenêtre d'exécution de l'outil. **Corrigé** : nouvel
+    événement SSE `status` émis via `_emit_stream()` à côté des `print()` terminal existants
+    (`search_files`/`system_info`/`run_shell` avec le `reason` du modèle ou `Running: <cmd>` en
+    secours) ; `web/index.html` affiche ce texte dans l'indicateur de frappe à côté des points
+    animés. **Piège de debug rencontré en vérifiant** : `--serve` avec stdout redirigé vers un
+    fichier semblait bloqué indéfiniment juste après "Chargement du routeur..." — plusieurs
+    minutes passées à soupçonner une résurgence du deadlock onnxruntime de v12.9 (repros isolés
+    de la même séquence systématiquement rapides, ~4s) avant que `faulthandler.dump_traceback_
+    later(15, exit=True)` ne prouve que le process était déjà dans `httpd.serve_forever()`, pas
+    bloqué du tout. Cause réelle : `print()` sans `flush=True` sur 3 lignes juste avant
+    `serve_forever()` — inoffensif sur un vrai terminal (line-buffered) mais retenu en plein
+    buffer dès que stdout est un pipe/fichier (exactement le cas `--serve` en service). Corrigé.
+    Pas un bug fonctionnel (chaque requête était déjà bien servie pendant ce temps) mais un vrai
+    piège d'exploitation. Validé par `curl -N` (séquence `status`→`token`×N→`done` correcte) +
+    `tests.sh` 5/5 + `test_fixes.py` inchangés. Détail complet dans `docs/TECH_WATCH.md`.
+13. **Recherche web multi-axes + contre-vérification + `web_search` tool (04/10/2026, v12.16)**
+    — l'utilisateur a demandé une recherche sur 5 axes jamais explorés (multimodal, websearch,
+    phone, plus de tools, speak realtime), menée via 5 sub-agents en parallèle, puis une 2e passe
+    de contre-vérification (2 sub-agents : un relit `agent.py` ligne par ligne, un re-vérifie aux
+    sources primaires les affirmations les plus critiques — même rigueur que l'incident "Bhargav
+    Patki"). **Correction majeure trouvée** : le candidat multimodal recommandé (`qwen2.5vl:7b`)
+    ne supporte PAS le tool calling natif Ollama — `qwen3-vl:8b-instruct` est le bon candidat
+    (vision+tools+thinking simultanés). **Priorités revues après lecture du vrai code** : PWA
+    confirmée triviale, websearch a un bug de dispatch à corriger en plus de l'ajout, le barge-in
+    VAD est repoussé en dernier (le vrai obstacle est l'architecture micro/speak, pas le VAD).
+    **Implémenté** : `web_search` (4e tool, via `ddgs`/DuckDuckGo) — mais d'abord un vrai re-test
+    empirique du plafond "3 tools" (toujours débattu, jamais vérifié depuis le début du projet) :
+    confirmé réel sur notre config précise (1 échec de dispatch + détours non pertinents sur le
+    test le plus dur avec 4 tools toujours présents, vs 3/3 fiable avec 3 tools). **Au lieu
+    d'abandonner le 4e tool** : sélection dynamique réutilisant le routeur existant (v12.8) —
+    `web_search` n'est ajouté à la liste de tools Ollama que pour les tours classés `web_search`
+    par le routeur, 100% des autres tours gardent exactement le comportement 3-tools déjà prouvé
+    fiable. Bug de dispatch dupliqué trouvé et corrigé au passage (chemin retry-sans-tools sans
+    `else` de secours). `tests.sh` 5/5 (test 5 redevenu fiable), `test_fixes.py` inchangé, test
+    end-to-end réel de `web_search` (météo, Ballon d'Or) — mécaniquement correct, mais une
+    hallucination observée sur la réponse finale (limite connue, pas un bug d'intégration).
+    Détail complet dans `docs/TECH_WATCH.md` (Partie 1ter + contre-vérification) et
+    `agent-pc/CLAUDE.md` (v12.16).
+14. **3 bugs réels trouvés via usage réel de `--serve` (04/10/2026, v12.17)** — l'utilisateur a
+    collé une session réelle (terminal + UI web) utilisée en production, pas un test scripté.
+    Analyse puis correction de 3 bugs, chacun reproduit isolément avant d'être corrigé :
+    (1) **gel du serveur entier** — une commande hallucinée (`newslookup`) classée `'unknown'`
+    tombait sur un `input()` bloquant le terminal du process `--serve`, jamais couvert par le
+    refus `IS_REMOTE` (qui ne gérait que `critical`/`write`) ; comme `handle_turn()` tourne sous
+    le `lock` partagé de `run_server()`, ça gelait TOUTES les requêtes suivantes. Corrigé :
+    `unknown` ajouté au tuple `IS_REMOTE`. (2) **mot-clé perdu sur wildcard en tête** —
+    `name="*.mkv"` donnait un mot-clé vide (`re.split` traitait `*` comme séparateur) ; corrigé
+    en retirant `*` de la classe de split. (3) **`~` jamais expansé dans `search_dir`** —
+    `shlex.quote('~/Downloads')` empêche le shell d'expanser le `~`, causant un faux "No such
+    file or directory" alors que le dossier existe ; corrigé avec `os.path.expanduser()` avant
+    `shlex.quote()`. Les 3 fixes revérifiés avec le cas exact de la session réelle (résolu en 1
+    étape/27s au lieu de 5 étapes/71s pour le bug #3). `tests.sh` 5/5, `test_fixes.py` inchangé.
+    Repéré mais pas corrigé (gap UX, pas un bug) : le chat web n'a pas d'équivalent aux commandes
+    spéciales du CLI (`reset`/`quit`) — `/clear`/`exit`/`bye` tapés dans le navigateur sont juste
+    du texte normal, mal classés par le routeur, et ne réinitialisent rien côté serveur. Détail
+    complet dans `agent-pc/CLAUDE.md` (v12.17).
+15. **Auto-audit suite à "vérifie bien il semble avoir toujours des incohérence" (même jour,
+    toujours v12.17)** — demande justifiée : relecture critique du code + des docs (pas une
+    nouvelle session utilisateur) a trouvé 4 incohérences de plus : (a) la bannière CLI listant
+    les tools (dont `web_search`) ne s'affichait **jamais en mode `--serve`** (le `return` du
+    bloc SERVE intervient avant ce `print()`) — corrigé en l'affichant aussi côté `--serve` ;
+    (b) le message de démarrage `--serve` disait encore "N2/N3 toujours refusés à distance",
+    devenu imprécis après le fix `unknown` — corrigé ; (c) `AGENTS.md` disait encore "5
+    categories" pour le routeur, oubliant `web_search` (6e, ajoutée en v12.16) — corrigé ; (d)
+    **vrai bug** : `run_server()` n'était pas protégé par un `try/finally` — si le bind échoue
+    (port déjà pris, reproduit en occupant volontairement le port 8765 avant de lancer
+    `--serve`), `_whisper_server_stop()` n'était jamais appelé, laissant whisper-server orphelin
+    sur le port 18080. Corrigé, reproduit avant/après pour confirmer (orphelin présent avant le
+    fix, absent après). Leçon retenue : une session réelle collée par l'utilisateur et un
+    auto-audit après coup trouvent des classes de bugs différentes (comportement déclenché à
+    l'usage vs code mort/dérive doc-code) — les deux passes sont utiles, aucune ne remplace
+    l'autre. Détail complet dans `agent-pc/CLAUDE.md` (v12.17).
 
 ## Fichiers concernés
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.14 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
+"""Agent PC v12.17 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
@@ -574,6 +574,35 @@ TOOLS = [
         }
     }
 ]
+# CORE_TOOLS = les 3 tools toujours exposés au LLM (comportement validé 5/5
+# depuis v10, jamais dégradé). web_search (ci-dessous) n'est ajouté à la liste
+# envoyée à Ollama QUE pour les tours que le routeur classe 'web_search' —
+# sélection dynamique (v12.16) suite au re-test empirique qui a montré qu'avoir
+# TOUJOURS 4 tools présents dégrade mesurablement la fiabilité sur les requêtes
+# multi-étapes complexes (ex. "Combien de séries avec taille ?"), même quand le
+# 4e tool n'est jamais appelé pour cette requête. Voir docs/TECH_WATCH.md.
+CORE_TOOLS = list(TOOLS)
+
+# Web search (re-test empirique du plafond "3 tools", v12.16) — désactivable sans
+# rien casser via MATATA_WEBSEARCH=0 (modularité, cf. AGENTS.md). Nécessite internet
+# (ddgs/DuckDuckGo) uniquement quand ce tool est effectivement appelé — exception
+# explicite et opt-out à la règle ZERO cloud, pas le LLM lui-même qui reste local.
+WEBSEARCH_ENABLED = os.environ.get('MATATA_WEBSEARCH', '1') != '0'
+if WEBSEARCH_ENABLED:
+    TOOLS.append({
+        'type': 'function',
+        'function': {
+            'name': 'web_search',
+            'description': 'Search the web for current or external info not available locally (news, weather, facts, prices). Do NOT use for files/system/shell questions.',
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string', 'description': 'Search query'}
+                },
+                'required': ['query']
+            }
+        }
+    })
 
 # === HELPERS ===
 # Détecte des commandes destructrices n'importe où dans la chaîne (pas seulement
@@ -646,12 +675,21 @@ def run_command(cmd_str, timeout=None):
 
 def handle_search_files(args):
     name = args.get('name', '')
-    name = re.split(r'[\s*,;|]+', name)[0].strip('.*')
+    # BUG FIX 04/10/2026 : ne PAS splitter sur '*' (un nom du style "*.mkv" ou
+    # "*video" se faisait couper en un mot-clé vide, puisque tout ce qui précède
+    # le '*' est jeté par re.split). On garde \s/,/;/| comme séparateurs de mots
+    # mais on retire seulement les '*'/'.' de bord une fois le mot isolé.
+    name = re.split(r'[\s,;|]+', name)[0].strip('*.')
     if not name:
-        d = args.get('search_dir', os.path.expanduser('~'))
+        d = os.path.expanduser(args.get('search_dir', '~'))
         listing = run_command(f'ls {shlex.quote(d)}')[:300]
         return f"Error: provide a keyword. Contents of {d}: {listing}"
-    search_dir = args.get('search_dir', os.path.expanduser('~'))
+    # BUG FIX 04/10/2026 : os.path.expanduser() AVANT shlex.quote() — un '~'
+    # entre quotes shell n'est jamais expansé (`ls '~/Downloads'` cherche un
+    # dossier LITTÉRALEMENT nommé "~/Downloads"), donc un search_dir fourni
+    # tel quel par le modèle (ex. "~/Downloads") échouait toujours avec un faux
+    # "No such file or directory" même quand le dossier existe réellement.
+    search_dir = os.path.expanduser(args.get('search_dir', '~'))
     file_type = args.get('file_type', '')
     cmd = f'find {shlex.quote(search_dir)} -iname "*{name}*"'
     if file_type: cmd += f' -type {file_type}'
@@ -689,6 +727,20 @@ def handle_system_info(args):
             parts.append('=TOP RAM=\n' + top_mem)
 
     return '\n'.join(parts)[:800]
+
+def handle_web_search(args):
+    query = args.get('query', '').strip()
+    if not query:
+        return 'Error: provide a search query.'
+    try:
+        from ddgs import DDGS
+        results = DDGS().text(query, max_results=3)
+    except Exception as e:
+        return f'Web search unavailable: {e}'
+    if not results:
+        return 'No results found.'
+    lines = [f"{r.get('title', '')}: {r.get('body', '')}" for r in results]
+    return '\n'.join(lines)[:600]
 
 # === UI ===
 
@@ -844,6 +896,26 @@ ROUTER_UTTERANCES = {
         "Size of the Music directory", "Total size of Documents folder",
         "Count files inside Desktop folder", "Number of subfolders in Documents",
     ],
+    # 'web_search' : requêtes nécessitant une info externe/actuelle (v12.16) —
+    # sert à décider dynamiquement d'exposer ou non le tool web_search au LLM
+    # (jamais fast-pathée, toujours déléguée au LLM comme system_stats/file_search).
+    'web_search': [
+        "Quel temps fait-il à Paris", "Quelle est la météo demain",
+        "Cherche sur internet les dernières nouvelles", "Qui a gagné le match hier soir",
+        "Quel est le prix du Bitcoin", "Quel est le cours de l'action Apple",
+        "Cherche des informations sur ce sujet en ligne", "Quelles sont les actualités du jour",
+        "Qui est le président actuel de la France", "Quelle est la capitale du Japon",
+        "Recherche la recette du tiramisu", "Trouve des infos sur ce film récent",
+        "Quand sort le prochain film Marvel", "Quel est le score du match de foot",
+        "Cherche un restaurant pas cher à proximité", "Quelle est la population de Tokyo",
+        "What's the weather like in London", "Search the web for recent news",
+        "What's the current Bitcoin price", "Who won the game last night",
+        "Look up the latest news today", "Find information about this topic online",
+        "What's the stock price of Tesla", "Search for the best pizza recipe",
+        "When does the next movie come out", "What's happening in the news right now",
+        "Look up today's headlines", "Find the score of the match",
+        "What's the population of New York", "Search online for this restaurant",
+    ],
     # 'other' : questions sur l'agent lui-même / hors-sujet — JAMAIS fast-pathée
     # (seules greeting/time_date le sont dans handle_turn). Ajoutée le 04/10/2026
     # suite à un bug réel observé : "Qui es-tu ?"/"Que peux-tu faire ?" étaient
@@ -957,7 +1029,20 @@ def handle_turn(inp, messages, show_timer):
     if score >= ROUTER_THRESHOLD and cat == 'time_date':
         _fast_time_date(messages, show_timer, t0)
         return
-    agent_turn(messages, show_timer, _COMMAND_HISTORY)
+    # Sélection dynamique du tool web_search (v12.16, voir CORE_TOOLS ci-dessus) :
+    # exposé au LLM seulement si le routeur classe ce tour 'web_search', sinon
+    # seuls les 3 CORE_TOOLS sont présentés — comportement pré-v12.16 inchangé
+    # si MATATA_ROUTER=0 (pas de routeur = pas de sélection possible, on assume
+    # alors le risque mesuré plutôt que de perdre web_search silencieusement).
+    if not WEBSEARCH_ENABLED:
+        tools_for_turn = CORE_TOOLS
+    elif not ROUTER_ENABLED:
+        tools_for_turn = TOOLS
+    elif cat == 'web_search' and score >= ROUTER_THRESHOLD:
+        tools_for_turn = TOOLS
+    else:
+        tools_for_turn = CORE_TOOLS
+    agent_turn(messages, show_timer, _COMMAND_HISTORY, tools=tools_for_turn)
 
 def trim_messages(msgs):
     if len(msgs) <= MAX_HISTORY + 1: return msgs
@@ -974,9 +1059,11 @@ def _ollama_stream(messages, tools=None):
         msg = chunk.get('message', {})
         yield (msg.get('content', ''), msg.get('tool_calls'), chunk.get('done', False))
 
-def agent_turn(messages, show_timer, command_history=None):
+def agent_turn(messages, show_timer, command_history=None, tools=None):
     if command_history is None:
         command_history = []
+    if tools is None:
+        tools = CORE_TOOLS
     max_steps = 5
     step = 0
     total_t0 = time.time()
@@ -990,7 +1077,7 @@ def agent_turn(messages, show_timer, command_history=None):
         speak_buf = ''      # phrases pas encore parlées (mode voix uniquement)
         safe_to_speak = True  # False dès qu'un pattern "je vais..." apparaît (retry probable)
         try:
-            for delta, tc, done in _ollama_stream(messages, tools=TOOLS):
+            for delta, tc, done in _ollama_stream(messages, tools=tools):
                 if delta:
                     text_buf.append(delta)
                     print(delta, end='', flush=True)
@@ -1098,6 +1185,14 @@ def agent_turn(messages, show_timer, command_history=None):
                                 print(f'📊 {out}')
                                 messages.append({'role': 'tool', 'content': out})
                                 continue
+                            elif fn_name == 'web_search':
+                                out = handle_web_search(args)
+                                print(f'🌐 {out}')
+                                messages.append({'role': 'tool', 'content': out})
+                                continue
+                            else:
+                                messages.append({'role': 'tool', 'content': f'Unknown: {fn_name}'})
+                                continue
                         else:
                             elapsed2 = time.time() - total_t0
                             ts2 = f'  ⏱️ {elapsed2:.1f}s' if show_timer else ''
@@ -1129,6 +1224,7 @@ def agent_turn(messages, show_timer, command_history=None):
             name = args.get('name', '?')
             sd = args.get('search_dir', '~')
             print(f'\U0001f50d Recherche "{name}" dans {sd}... [{step}/{max_steps}]')
+            _emit_stream('status', text=f'Searching for "{name}"...')
             out = handle_search_files(args)
             print(f'\U0001f4c4 {out}')
             messages.append({'role': 'tool', 'content': out})
@@ -1136,14 +1232,25 @@ def agent_turn(messages, show_timer, command_history=None):
         elif fn_name == 'system_info':
             cat = args.get('category', 'all')
             print(f'\U0001f4ca Syst\u00e8me ({cat})... [{step}/{max_steps}]')
+            _emit_stream('status', text=f'Checking system info ({cat})...')
             out = handle_system_info(args)
+            print(f'\U0001f4c4 {out}')
+            messages.append({'role': 'tool', 'content': out})
+
+        elif fn_name == 'web_search':
+            q = args.get('query', '?')
+            print(f'\U0001f310 Recherche web "{q}"... [{step}/{max_steps}]')
+            _emit_stream('status', text=f'Searching the web for "{q}"...')
+            out = handle_web_search(args)
             print(f'\U0001f4c4 {out}')
             messages.append({'role': 'tool', 'content': out})
 
         elif fn_name == 'run_shell':
             cmd = args.get('command', '')
             reason = args.get('reason', '')
-            if reason: print(f'\U0001f916 {reason}')
+            if reason:
+                print(f'\U0001f916 {reason}')
+                _emit_stream('status', text=reason)
 
             # BUG FIX 2: Reject commands over 200 chars
             if len(cmd) > 200:
@@ -1169,14 +1276,21 @@ def agent_turn(messages, show_timer, command_history=None):
                 return
             elif lvl == 'read':
                 print('\u2705 Auto...')
+                if not reason:
+                    _emit_stream('status', text=f'Running: {cmd}')
                 out = run_command(cmd)
                 print(f'\U0001f4c4 {out}')
                 messages.append({'role': 'tool', 'content': out})
-            elif lvl in ('critical', 'write') and IS_REMOTE:
-                # N2/N3 : pas de confirmation \u00e0 distance impl\u00e9ment\u00e9e (v12.9, --serve) \u2014
+            elif lvl in ('critical', 'write', 'unknown') and IS_REMOTE:
+                # N2/N3/unknown : pas de confirmation \u00e0 distance impl\u00e9ment\u00e9e (v12.9, --serve) \u2014
                 # refus\u00e9s syst\u00e9matiquement \u00e0 distance pour l'instant, m\u00eame avec un canal
                 # web/mobile branch\u00e9. input() serait de toute fa\u00e7on bloquant sans TTY local.
-                kind = 'N3 critique' if lvl == 'critical' else 'N2'
+                # 'unknown' ajout\u00e9 le 04/10/2026 (bug trouv\u00e9 en usage r\u00e9el) : une commande
+                # hallucin\u00e9e/non-whitelist\u00e9e (ex. un binaire inexistant) tombait sinon dans le
+                # m\u00eame `input()` bloquant que 'critical'/'write' local, gelant TOUT le serveur
+                # (handle_turn() tourne sous le `lock` partag\u00e9 de run_server) jusqu'\u00e0 ce que
+                # quelqu'un tape physiquement dans le terminal du process --serve.
+                kind = 'N3 critique' if lvl == 'critical' else ('N2' if lvl == 'write' else 'commande non reconnue')
                 print(f'\U0001f512 {kind} \u2014 confirmation locale requise, refus\u00e9 \u00e0 distance.')
                 messages.append({'role': 'tool', 'content': f'REFUSED: {kind} action requires local confirmation, not available remotely.'})
                 return
@@ -1373,11 +1487,11 @@ def run_server(messages, show_timer):
 
     httpd = http.server.ThreadingHTTPServer((SERVE_HOST, SERVE_PORT), Handler)
     print(f'\U0001f310 Interface sur http://{SERVE_HOST}:{SERVE_PORT}  '
-          f'(GET / \u2014 API : POST /chat/, POST /voice/, POST /reset/, GET /health)')
+          f'(GET / \u2014 API : POST /chat/, POST /voice/, POST /reset/, GET /health)', flush=True)
     if not SERVE_TOKEN:
         print('   \u26a0\ufe0f  MATATA_SERVE_TOKEN non d\u00e9fini \u2014 aucune authentification. '
-              'OK en local/Tailscale priv\u00e9, \u00e0 d\u00e9finir avant toute exposition plus large.')
-    print('   N2/N3 toujours refus\u00e9s \u00e0 distance dans ce mode (voir AGENTS.md).\n')
+              'OK en local/Tailscale priv\u00e9, \u00e0 d\u00e9finir avant toute exposition plus large.', flush=True)
+    print('   N2/N3/commandes non reconnues toujours refus\u00e9s \u00e0 distance dans ce mode (voir AGENTS.md).\n', flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -1422,11 +1536,25 @@ def main():
             print('   ⏳ Chargement du routeur...', end=' ', flush=True)
             try:
                 _get_router()
-                print('✅')
+                print('✅', flush=True)
             except Exception:
-                print('⚠️ indisponible, LLM seul')
-        run_server(messages, show_timer)
-        _whisper_server_stop()
+                print('⚠️ indisponible, LLM seul', flush=True)
+        # BUG FIX 04/10/2026 : le `return` de ce bloc SERVE empêche d'atteindre le
+        # print de bannière/tools_line plus bas (CLI/voix uniquement) — sans cette
+        # ligne, --serve ne dit jamais si web_search est actif, contrairement au CLI.
+        tools_msg = '   🔍 search | 📊 sys | 📋 shell'
+        if WEBSEARCH_ENABLED:
+            tools_msg += ' | 🌐 web (toujours)' if not ROUTER_ENABLED else ' | 🌐 web (si pertinent)'
+        print(tools_msg, flush=True)
+        # BUG FIX 04/10/2026 : try/finally ajouté — si run_server() lève (ex. port
+        # déjà utilisé, OSError), _whisper_server_stop() n'était jamais appelé et
+        # le process whisper-server restait orphelin, bindé sur son port, invisible
+        # tant qu'on ne pense pas à vérifier (trouvé en auditant --serve après les
+        # fixes précédents, cf. agent-pc/CLAUDE.md v12.17).
+        try:
+            run_server(messages, show_timer)
+        finally:
+            _whisper_server_stop()
         return
 
     # Whisper-server persistant : pas de rechargement du modèle par passe
@@ -1455,9 +1583,12 @@ def main():
         except Exception:
             print('⚠️ indisponible, LLM seul')
 
-    print(f'\n\U0001f916 Agent PC v12.14 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.17 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
-    print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
+    tools_line = '   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell'
+    if WEBSEARCH_ENABLED:
+        tools_line += ' | \U0001f310 web (toujours)' if not ROUTER_ENABLED else ' | \U0001f310 web (si pertinent)'
+    print(tools_line)
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')
     if WAKE:
         pass  # instructions affichées par hands_free_loop

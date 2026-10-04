@@ -9,3 +9,8 @@ ollama>=0.6.2,<0.7
 # Routeur pré-LLM (v12.8) — optionnel, import dynamique dans agent.py.
 # Désactivable sans rien désinstaller via MATATA_ROUTER=0.
 # fastembed>=0.3.0                # embeddings ONNX, zéro torch (~222Mo)
+
+# Web search (v12.16) — optionnel, import dynamique dans agent.py.
+# Seule exception à ZERO cloud : appelé uniquement quand ce tool est invoqué.
+# Désactivable sans rien désinstaller via MATATA_WEBSEARCH=0.
+# ddgs>=9.0.0                     # recherche DuckDuckGo, zéro clé API
