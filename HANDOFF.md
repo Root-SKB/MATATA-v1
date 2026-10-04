@@ -159,8 +159,23 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
    Détail complet dans `docs/TECH_WATCH.md`.
 6. P1 : ~~Granite 4.1~~ **[FAIT 03/10, écarté]**, Kyutai STT/TTS, Wyoming/wyoming-satellite
    (panneau mobile Phase 1).
-7. `IS_REMOTE` reste à `False` — aucun canal distant construit : c'est le vrai prérequis
-   bloquant de la Phase 1 web/mobile (le Tailscale existe déjà, rien côté agent ne l'exploite).
+7. ~~`IS_REMOTE` reste à `False`~~ **[FAIT 04/10/2026, v12.9]** — premier canal distant câblé :
+   mode `--serve`, serveur HTTP minimal stdlib (`http.server`, zéro nouvelle dépendance),
+   `GET /health` / `POST /chat` / `POST /reset`, auth optionnelle par token
+   (`MATATA_SERVE_TOKEN`). Met `IS_REMOTE=True` pour toute la durée du process — **N2 (write)
+   est maintenant aussi refusé à distance, pas seulement N3** (bug trouvé en implémentant :
+   N2 serait tombé sur un `input()` bloquant sans TTY, gelant la requête HTTP ; décision
+   utilisateur : bloquer N2/N3 à distance pour l'instant, pas de confirmation asynchrone
+   distante dans cette première version). Testé réellement : `mkdir` envoyé via `/chat` →
+   refusé, rien créé. Reste à faire : exposer via Tailscale (déjà actif, juste changer
+   `MATATA_SERVE_HOST`), une UI (actuellement API seule, décision utilisateur), et une vraie
+   confirmation distante si jamais N2/N3 à distance devient nécessaire.
+   **Bug collatéral trouvé et corrigé** : le routeur pré-LLM (v12.8) pouvait bloquer
+   indéfiniment au chargement (deadlock `onnxruntime` sur cette machine 22 cœurs, 60 threads
+   coincés) — corrigé en fixant `threads=4` (`MATATA_ROUTER_THREADS`) au lieu de l'auto-détection.
+   Risque présent aussi en CLI normal (pas seulement `--serve`), juste jamais déclenché avant.
+   Détail complet (dont la leçon sur le faux diagnostic de blocage via `ps`/stdout bufferisé)
+   dans `docs/TECH_WATCH.md`.
 
 ## Fichiers concernés
 

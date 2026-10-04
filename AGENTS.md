@@ -10,7 +10,7 @@ Python agent (`agent.py`, currently single-file) using Qwen3 8B via Ollama nativ
 | File | Role |
 |------|------|
 | `matata/` | Thin package wrapper → console `matata` / `python3 -m matata` (delegates to agent.py) |
-| `agent-pc/agent.py` | **Single file agent** (~1250 lines, v12.8). All logic here. |
+| `agent-pc/agent.py` | **Single file agent** (~1355 lines, v12.9). All logic here. |
 | `agent-pc/test_fixes.py` | Unit tests: command dedup + length limit + security classify (no Ollama needed) |
 | `agent-pc/tests.sh` | Integration test suite (~3 min on iGPU, requires Ollama) |
 | `voice/` | Whisper.cpp + Piper models + wake word model (gitignored binaries, committed config) |
@@ -33,6 +33,9 @@ matata --voice --timer
 # Run with wake word "MATATA" (hands-free)
 matata --wake --timer
 
+# API web minimale (Phase 1 web/mobile), N2/N3 refusés à distance pour l'instant
+MATATA_SERVE_TOKEN=change-me matata --serve --timer
+
 # Quick validation (no Ollama)
 python3 agent-pc/test_fixes.py
 
@@ -51,7 +54,8 @@ python3 -m py_compile agent-pc/agent.py
 - **Per-generation params**: `repeat_penalty` RETIRÉ pour les deux modèles (v12.5, bench 2026-08-30 : 1.0 == 1.2 en fiabilité sur basiques + multi-step, zéro réponse vide/early-EOS — le 1.2 historique pour éviter ~60% early-EOS après échec de tool n'est plus nécessaire ; et tout repeat_penalty casse le tool calling de qwen3.5). `AGENT_DEBUG=1` env var logs per-step response stats to stderr.
 - **Safety**: N1/N2/N3 levels (v12.6, patron inspiré de jarvis-assistant-vocal). READ/N1 auto-executes, WRITE/N2 (`mkdir`/`cp`/`mv`/`touch`/`tee`/`echo`/`sed`) asks confirmation (local or, once a remote channel exists, remote), CRITICAL/N3 (`chmod`/`chown`/`apt`/`pip`/`nano`/`vim`/`nohup`) asks confirmation **local only** — gated by `IS_REMOTE` (still `False` today, no remote channel exists), BLOCKED (`rm`/`rmdir`/`shred`/`dd`/`reboot`/`halt`/etc) never. `classify_command` hardened (v12.5): scans every command incl. `find -exec`, `xargs`, `sh -c`, `awk system()`, `systemctl reboot/poweroff/halt/kill/stop`. See whitelist in `agent.py`.
 - **Auto-backup**: Before write operations on existing files, saves to `~/.agent-pc-backups/`.
-- **Pre-LLM router** (v12.8): `route_intent()` classifies every turn (FastEmbed/ONNX embeddings, hand-rolled — not the `semantic-router` package, ZERO frameworks) into greeting/time_date/system_stats/file_search. Only `greeting`/`time_date` fast-path (skip Ollama, instant canned/`datetime.now()` reply) above `MATATA_ROUTER_THRESHOLD` (default 0.5); `system_stats`/`file_search` always go through the normal LLM+tool path (router can't extract command arguments). Disable entirely with `MATATA_ROUTER=0`. Validated 92.0%/5.2ms vs Laya 84.0%/216.4ms on a 100-query benchmark — see `docs/TECH_WATCH.md`.
+- **Pre-LLM router** (v12.8): `route_intent()` classifies every turn (FastEmbed/ONNX embeddings, hand-rolled — not the `semantic-router` package, ZERO frameworks) into greeting/time_date/system_stats/file_search. Only `greeting`/`time_date` fast-path (skip Ollama, instant canned/`datetime.now()` reply) above `MATATA_ROUTER_THRESHOLD` (default 0.5); `system_stats`/`file_search` always go through the normal LLM+tool path (router can't extract command arguments). Disable entirely with `MATATA_ROUTER=0`. Validated 92.0%/5.2ms vs Laya 84.0%/216.4ms on a 100-query benchmark — see `docs/TECH_WATCH.md`. `TextEmbedding()` must pin `threads=` explicitly (`MATATA_ROUTER_THREADS`, default 4) — onnxruntime's auto thread-count on this 22-core machine deadlocked (found via `--serve` testing, v12.9), fixed and now safe for both CLI and `--serve` startup.
+- **Web server** (v12.9, `--serve`): minimal stdlib `http.server` API (`GET /health`, `POST /chat`, `POST /reset`) for Phase 1 remote access — no framework (gain réel mesuré ne le justifiait pas ici). Standalone mode (not combined with `--voice`/`--wake`). Sets `IS_REMOTE=True` for the process lifetime; N2 **and** N3 refused outright when remote (no remote confirmation flow built yet — `elif lvl in ('critical','write') and IS_REMOTE` in `agent_turn`). Optional `MATATA_SERVE_TOKEN` bearer auth, binds `127.0.0.1:8765` by default (`MATATA_SERVE_HOST`/`MATATA_SERVE_PORT`).
 - **Agent loop**: max 5 steps per turn, sliding window of 5 commands for dedup (shared across turns via `_COMMAND_HISTORY`), commands capped at 200 chars.
 - **CPU/iGPU**: Vulkan iGPU ≈ 2× CPU speed (Hi 9-14s, complex multi-step 25-45s). Keep tool outputs SHORT — caps: 600 chars (shell/search), 800 (system_info). `system_info(all)` returns only ram+disk+cpu.
 

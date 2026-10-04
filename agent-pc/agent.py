@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.8 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3"""
+"""Agent PC v12.9 — 3 tools + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + serveur web (--serve)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
@@ -763,6 +763,10 @@ ROUTER_ENABLED = os.environ.get('MATATA_ROUTER', '1') != '0'
 ROUTER_THRESHOLD = float(os.environ.get('MATATA_ROUTER_THRESHOLD', '0.5'))
 ROUTER_TOPK = 5
 ROUTER_MODEL_NAME = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+# threads=4 (pas None) : évite un hang (bug trouvé 04/10/2026) où onnxruntime 1.29.0
+# sur une machine à beaucoup de cœurs (22 ici) sur-provisionne son pool de threads
+# (60 threads observés, tous bloqués en futex_do_wait) au lieu de charger le modèle.
+ROUTER_THREADS = int(os.environ.get('MATATA_ROUTER_THREADS', '4'))
 
 ROUTER_UTTERANCES = {
     'greeting': [
@@ -836,7 +840,7 @@ def _get_router():
     if _router_model is None:
         from fastembed import TextEmbedding
         import numpy as np
-        _router_model = TextEmbedding(model_name=ROUTER_MODEL_NAME)
+        _router_model = TextEmbedding(model_name=ROUTER_MODEL_NAME, threads=ROUTER_THREADS)
         _router_vecs = []
         for cat, utts in ROUTER_UTTERANCES.items():
             for vec in _router_model.embed(utts):
@@ -1119,10 +1123,13 @@ def agent_turn(messages, show_timer, command_history=None):
                 out = run_command(cmd)
                 print(f'\U0001f4c4 {out}')
                 messages.append({'role': 'tool', 'content': out})
-            elif lvl == 'critical' and IS_REMOTE:
-                # N3 : jamais satisfiable \u00e0 distance, m\u00eame avec un canal web/mobile branch\u00e9.
-                print('\U0001f512 N3 critique \u2014 confirmation locale fra\u00eeche requise, refus\u00e9 \u00e0 distance.')
-                messages.append({'role': 'tool', 'content': 'REFUSED: N3 critical action requires a fresh LOCAL confirmation, not available remotely.'})
+            elif lvl in ('critical', 'write') and IS_REMOTE:
+                # N2/N3 : pas de confirmation \u00e0 distance impl\u00e9ment\u00e9e (v12.9, --serve) \u2014
+                # refus\u00e9s syst\u00e9matiquement \u00e0 distance pour l'instant, m\u00eame avec un canal
+                # web/mobile branch\u00e9. input() serait de toute fa\u00e7on bloquant sans TTY local.
+                kind = 'N3 critique' if lvl == 'critical' else 'N2'
+                print(f'\U0001f512 {kind} \u2014 confirmation locale requise, refus\u00e9 \u00e0 distance.')
+                messages.append({'role': 'tool', 'content': f'REFUSED: {kind} action requires local confirmation, not available remotely.'})
                 return
             else:
                 prompt = '\U0001f512 N3 CRITIQUE \u2014 confirmation locale (o/n) > ' if lvl == 'critical' \
@@ -1142,10 +1149,91 @@ def agent_turn(messages, show_timer, command_history=None):
     ts = f'  \u23f1\ufe0f {elapsed:.1f}s' if show_timer else ''
     print(f'(max {max_steps} \u00e9tapes){ts}\n')
 
+# === SERVEUR WEB MINIMAL (v12.9, --serve) ===
+# API HTTP pour piloter l'agent \u00e0 distance (ex. via Tailscale, d\u00e9j\u00e0 configur\u00e9 mais
+# jamais exploit\u00e9 jusqu'ici). Volontairement stdlib pur (http.server) : pas de
+# framework \u2014 quelques endpoints JSON pour un seul utilisateur ne justifient pas
+# FastAPI/aiohttp (r\u00e8gle "gain r\u00e9el mesur\u00e9", voir AGENTS.md). Mode exclusif : ne
+# tourne pas en m\u00eame temps que --voice/--wake/CLI interactif (modularit\u00e9 : juste
+# un nouveau mode optionnel, rien d'existant ne change si on ne l'active pas).
+# N2/N3 toujours refus\u00e9s \u00e0 distance dans cette premi\u00e8re version (IS_REMOTE=True
+# pendant toute la dur\u00e9e du mode) \u2014 pas de confirmation asynchrone distante
+# impl\u00e9ment\u00e9e, cf. gate ajout\u00e9 dans agent_turn ci-dessus.
+SERVE_PORT = int(os.environ.get('MATATA_SERVE_PORT', '8765'))
+SERVE_HOST = os.environ.get('MATATA_SERVE_HOST', '127.0.0.1')
+SERVE_TOKEN = os.environ.get('MATATA_SERVE_TOKEN', '')
+
+def run_server(messages, show_timer):
+    import http.server
+
+    lock = threading.Lock()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _send_json(self, code, obj):
+            body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _authorized(self):
+            if not SERVE_TOKEN:
+                return True
+            return self.headers.get('Authorization') == f'Bearer {SERVE_TOKEN}'
+
+        def do_GET(self):
+            if self.path == '/health':
+                return self._send_json(200, {'status': 'ok', 'model': MODEL, 'remote': IS_REMOTE})
+            self._send_json(404, {'error': 'not found'})
+
+        def do_POST(self):
+            if not self._authorized():
+                return self._send_json(401, {'error': 'unauthorized'})
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(length) if length else b'{}'
+            try:
+                data = json.loads(raw or b'{}')
+            except Exception:
+                return self._send_json(400, {'error': 'invalid JSON'})
+
+            if self.path == '/reset':
+                with lock:
+                    messages[:] = [{'role': 'system', 'content': SYSTEM}]
+                return self._send_json(200, {'status': 'reset'})
+
+            if self.path == '/chat':
+                inp = (data.get('message') or '').strip()
+                if not inp:
+                    return self._send_json(400, {'error': 'missing "message"'})
+                with lock:
+                    handle_turn(inp, messages, show_timer)
+                    last = messages[-1]
+                return self._send_json(200, {'reply': last.get('content', ''), 'role': last.get('role', '')})
+
+            self._send_json(404, {'error': 'not found'})
+
+        def log_message(self, fmt, *args):
+            pass  # agent.py a d\u00e9j\u00e0 ses propres print(), pas besoin du log HTTP par d\u00e9faut
+
+    httpd = http.server.ThreadingHTTPServer((SERVE_HOST, SERVE_PORT), Handler)
+    print(f'\U0001f310 Serveur sur http://{SERVE_HOST}:{SERVE_PORT}  (POST /chat, POST /reset, GET /health)')
+    if not SERVE_TOKEN:
+        print('   \u26a0\ufe0f  MATATA_SERVE_TOKEN non d\u00e9fini \u2014 aucune authentification. '
+              'OK en local/Tailscale priv\u00e9, \u00e0 d\u00e9finir avant toute exposition plus large.')
+    print('   N2/N3 toujours refus\u00e9s \u00e0 distance dans ce mode (voir AGENTS.md).\n')
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print('\n\U0001f44b')
+    finally:
+        httpd.server_close()
+
 # === MAIN ===
 def main():
-    global VOICE, VOICE_LANG, WAKE
+    global VOICE, VOICE_LANG, WAKE, IS_REMOTE
     show_timer = '--timer' in sys.argv or '-t' in sys.argv
+    SERVE = '--serve' in sys.argv or os.environ.get('MATATA_SERVE') == '1'
     VOICE = '--voice' in sys.argv or '-v' in sys.argv
     WAKE = '--wake' in sys.argv or os.environ.get('MATATA_WAKE') == '1'
     if WAKE:
@@ -1158,6 +1246,23 @@ def main():
             print(f'\u26a0\ufe0f  Mode wake impossible : mod\u00e8le {WAKE_MODEL_PATH} manquant ou voix indisponible.')
             return
     messages = [{'role': 'system', 'content': SYSTEM}]
+
+    if SERVE:
+        IS_REMOTE = True
+        try:
+            ollama.chat(model=MODEL, messages=[{'role': 'user', 'content': 'hi'}],
+                        options={'num_predict': 1}, **THINK_KW)
+        except Exception:
+            pass
+        if ROUTER_ENABLED:
+            print('   ⏳ Chargement du routeur...', end=' ', flush=True)
+            try:
+                _get_router()
+                print('✅')
+            except Exception:
+                print('⚠️ indisponible, LLM seul')
+        run_server(messages, show_timer)
+        return
 
     # Whisper-server persistant : pas de rechargement du modèle par passe
     if VOICE:
@@ -1185,7 +1290,7 @@ def main():
         except Exception:
             print('⚠️ indisponible, LLM seul')
 
-    print(f'\n\U0001f916 Agent PC v12.8 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.9 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     print(f'   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell')
     print(f'   Timer: {"ON" if show_timer else "OFF"} | quit, reset, timer, voix, langue')

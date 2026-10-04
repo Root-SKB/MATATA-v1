@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (currently a single file, current version: v12.8)
+- agent.py — Main agent script (currently a single file, current version: v12.9)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
 - tests.sh — Integration suite (5 queries, ~3 min on iGPU)
@@ -26,9 +26,38 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     # or manually:
     source ~/dev/personal/agent-pc/venv/bin/activate
     python3 ~/dev/personal/agent-pc/agent-pc/agent.py --timer
+    # API web minimale (Phase 1), N2/N3 refusés à distance :
+    MATATA_SERVE_TOKEN=change-me python3 agent-pc/agent.py --serve --timer
 
-## Current Version: v12.8 (pre-LLM router, fast-path greeting/time_date)
+## Current Version: v12.9 (minimal web API, --serve)
 3 tools: run_shell, search_files, system_info
+- v12.9: first Phase 1 web/mobile step — `--serve` mode (`MATATA_SERVE=1` or `--serve` flag)
+  runs a minimal stdlib-only HTTP API (`http.server.ThreadingHTTPServer`, zero new dependency —
+  the need doesn't justify FastAPI/aiohttp per the "gain réel mesuré" rule) instead of the
+  interactive CLI loop. Endpoints: `GET /health`, `POST /chat {"message": "..."}` →
+  `{"reply", "role"}`, `POST /reset`. Optional bearer-token auth via `MATATA_SERVE_TOKEN` (no
+  auth if unset — fine for localhost/private Tailscale, set before any wider exposure).
+  Binds `127.0.0.1` by default (`MATATA_SERVE_HOST` to change), port 8765 by default
+  (`MATATA_SERVE_PORT`). Sets `IS_REMOTE = True` for the whole process lifetime (standalone
+  mode, mutually exclusive with `--voice`/`--wake`/interactive CLI — modularity: a new opt-in
+  mode, nothing existing changes unless you use it). **N2 (write) now also gated by
+  `IS_REMOTE`** (agent_turn's `elif lvl in ('critical', 'write') and IS_REMOTE`) — previously
+  only N3 checked `IS_REMOTE`; N2 would have hit a blocking `input()` with no local TTY to
+  answer it, hanging the request. No remote confirmation flow implemented yet: N2/N3 both
+  refused outright when remote, exactly as the user decided (block first, build real remote
+  confirmation later if needed).
+  **Bug found + fixed during testing**: `_get_router()`'s `TextEmbedding(...)` call would
+  deadlock (60 threads parked in `futex_do_wait`, confirmed via `/proc/<pid>/task/*/wchan`,
+  never observed when calling it directly in isolation — reproduced reliably only through the
+  full `--serve` startup path) on this 22-core machine with onnxruntime 1.29.0's default
+  thread-pool sizing. Fixed by passing `threads=ROUTER_THREADS` (env `MATATA_ROUTER_THREADS`,
+  default 4) explicitly to `TextEmbedding()` instead of leaving it to auto-detect core count —
+  verified reliable across 7+ repeated runs after the fix, zero hangs. This also quietly fixes
+  the same class of risk for normal CLI startup, not just `--serve` (the router loads the same
+  way there, just hadn't hit the race during this session's many earlier CLI tests).
+  Validated: `tests.sh` 5/5 + `test_fixes.py` unchanged; manual `curl` tests of all 3 endpoints
+  (greeting fast-path, read-command via LLM, write-command correctly refused remotely, 401 on
+  missing/wrong token, 200 on correct token).
 - v12.8: pre-LLM intent router (`route_intent()`) using FastEmbed (ONNX, ~222MB, zero torch)
   embeddings + a hand-rolled top-5-nearest-neighbor/mean-by-route classifier — NOT the
   `semantic-router` package itself (ZERO frameworks constraint; the package was only used to
