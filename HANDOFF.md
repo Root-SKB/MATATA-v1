@@ -297,6 +297,32 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
     auto-audit après coup trouvent des classes de bugs différentes (comportement déclenché à
     l'usage vs code mort/dérive doc-code) — les deux passes sont utiles, aucune ne remplace
     l'autre. Détail complet dans `agent-pc/CLAUDE.md` (v12.17).
+16. **Vrai test micro via navigateur + retry `web_search` (04/10/2026, v12.18)** — l'utilisateur
+    a demandé un test du micro directement depuis le navigateur (pas via `curl`). Automatisé via
+    Chrome headless piloté en CDP brut (`websocket-client`, pas de playwright installé) avec
+    `--use-file-for-fake-audio-capture` pour injecter un clip Piper synthétique ("Quelle est la
+    météo à Paris aujourd'hui ?") comme faux micro, clic réel sur le bouton micro via `Runtime.
+    evaluate`. **Pipeline confirmé fonctionnel de bout en bout** (transcription, routeur,
+    `web_search` exposé dynamiquement et appelé, SSE, rendu correct — capture d'écran à l'appui),
+    même avec une transcription dégradée ("Paris" entendu "apparaître"). Un appel `ddgs` a
+    échoué avec une erreur DNS transitoire (suffixe Tailscale MagicDNS mal résolu sur le backend
+    startpage) — re-testé 3x juste après en isolation, 3/3 succès immédiats, donc pas
+    systématique. **Corrigé** : `handle_web_search()` retente une fois (pause 0.5s) avant
+    d'abandonner, vérifié par simulation d'un échec au 1er appel puis succès au 2e. `tests.sh`
+    5/5, `test_fixes.py` inchangé. Détail complet dans `agent-pc/CLAUDE.md` (v12.18).
+17. **Auto-reformulation de `web_search` (04/10/2026, v12.19)** — l'utilisateur a demandé si
+    l'agent peut, comme un humain (ou moi), adapter sa recherche et la relancer lui-même si elle
+    ne trouve rien. Le patron existait déjà pour `run_shell` (règle 11 du `SYSTEM` prompt) mais
+    rien d'équivalent pour `web_search`. Ajouté : règle 14 ("reformulate... and search again") +
+    message "No results found. Try different or simpler keywords." (au lieu du message sec).
+    **Piège trouvé et corrigé avant de livrer** : une 1ère version injectait la règle 14 dans
+    TOUT appel dès que `web_search` est actif, même les tours qui ne l'utilisent pas — `tests.sh`
+    a montré le test le plus dur échouer une fois avec le symptôme déjà vu en v12.16 (pas une
+    preuve ferme vu la flakiness connue de ce test, mais le risque était réel et gratuit à
+    corriger). Corrigé : la règle 14 n'est injectée dans le prompt système que les tours où
+    `web_search` est réellement exposé (`SYSTEM`/`SYSTEM_WEBSEARCH` précalculés, basculés au
+    même endroit que `CORE_TOOLS`/`TOOLS`). `tests.sh` 5/5 après correction. Détail complet dans
+    `agent-pc/CLAUDE.md` (v12.19).
 
 ## Fichiers concernés
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.17 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
+"""Agent PC v12.19 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
@@ -734,11 +734,26 @@ def handle_web_search(args):
         return 'Error: provide a search query.'
     try:
         from ddgs import DDGS
-        results = DDGS().text(query, max_results=3)
     except Exception as e:
         return f'Web search unavailable: {e}'
+    # 1 retry (v12.18) : ddgs alterne entre plusieurs moteurs (startpage, duckduckgo...)
+    # et un raté DNS/backend transitoire a été observé en test réel (micro navigateur) —
+    # re-tenté manuellement en isolation juste après : 3/3 succès immédiats, donc pas
+    # systématique. Une petite pause laisse le temps au souci transitoire de passer.
+    results, last_err = None, None
+    for attempt in range(2):
+        try:
+            results = DDGS().text(query, max_results=3)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(0.5)
+    if last_err is not None:
+        return f'Web search unavailable: {last_err}'
     if not results:
-        return 'No results found.'
+        return 'No results found. Try different or simpler keywords.'
     lines = [f"{r.get('title', '')}: {r.get('body', '')}" for r in results]
     return '\n'.join(lines)[:600]
 
@@ -748,7 +763,17 @@ def handle_web_search(args):
 HOME = os.path.expanduser('~')
 USER = os.environ.get('USER', 'user')
 
-SYSTEM = f"""You are Agent PC, a local Ubuntu assistant. You help by CALLING tools, not by describing actions.
+def _build_system(include_websearch_rule):
+    # BUG FIX 04/10/2026 (v12.19) : la règle 14 (web_search) était injectée en dur
+    # dans TOUT appel dès que WEBSEARCH_ENABLED, même sur les tours où CORE_TOOLS
+    # (3 tools, web_search non exposé) est envoyé à Ollama — exactement le genre
+    # de "bruit" dont on a prouvé empiriquement (v12.16) qu'il dégrade les requêtes
+    # multi-étapes dures. Deux variantes précalculées une fois ; handle_turn()
+    # choisit laquelle mettre dans messages[0] selon les tools réellement exposés
+    # ce tour-ci (même patron que CORE_TOOLS vs TOOLS).
+    rule14 = """
+14. web_search: if results are empty or not relevant to the question, do NOT give up after one try — reformulate with different/simpler keywords (like you would adapt a failed shell command) and search again.""" if include_websearch_rule else ""
+    return f"""You are Agent PC, a local Ubuntu assistant. You help by CALLING tools, not by describing actions.
 
 Context: User={USER}, Home={HOME}, Ubuntu 24.04, 32GB RAM, Intel Ultra 7 155H.
 Known: Series={HOME}/Videos/Film/Series/<name>/ (each series = one subdir with .mkv files), Desktop={HOME}/Desktop, Projects={HOME}/dev/personal/agent-pc/
@@ -766,7 +791,7 @@ Rules:
 10. Reply in the user's language (French if they write French, English if they write English), concise.
 11. If a command fails, NEVER redo it with cosmetic changes (different binary path, flags). Run ls on the parent dir to see real names, then adapt.
 12. AUDIO vs VIDEO: "musique/audio" = ONLY audio extensions (mp3, wav, flac, ogg, m4a, aac). NEVER mp4/mkv/webm/avi for music. Séries/vidéos = mkv, mp4, webm, avi. Match the extension to what is asked.
-13. Only call a tool when you know its exact argument (path, keyword, category). If a path is uncertain, ls the parent dir first.
+13. Only call a tool when you know its exact argument (path, keyword, category). If a path is uncertain, ls the parent dir first.{rule14}
 
 Examples of good simple commands:
 - "combien de musique" → run_shell: find ~/Music -type f \\( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' -o -iname '*.m4a' -o -iname '*.ogg' \\) | wc -l   (AUDIO only, NEVER mp4/mkv)
@@ -774,6 +799,9 @@ Examples of good simple commands:
 - "combien de RAM" → system_info (category="ram")
 - "taille dossier Videos" → run_shell: du -sh ~/Videos
 - "chercher fichiers python" → run_shell: find ~ -name "*.py" -type f | head -20"""
+
+SYSTEM = _build_system(False)
+SYSTEM_WEBSEARCH = _build_system(True) if WEBSEARCH_ENABLED else SYSTEM
 
 MAX_HISTORY = 20
 
@@ -1042,6 +1070,11 @@ def handle_turn(inp, messages, show_timer):
         tools_for_turn = TOOLS
     else:
         tools_for_turn = CORE_TOOLS
+    # v12.19 : le message système suit le même choix (règle 14 web_search retirée
+    # du prompt quand le tool ne l'est pas ce tour-ci) — messages[0] est muté en
+    # place, sûr puisque handle_turn()/agent_turn() tournent déjà sous le lock de
+    # run_server() en mode --serve, zéro course possible entre deux requêtes.
+    messages[0]['content'] = SYSTEM_WEBSEARCH if tools_for_turn is TOOLS else SYSTEM
     agent_turn(messages, show_timer, _COMMAND_HISTORY, tools=tools_for_turn)
 
 def trim_messages(msgs):
@@ -1583,7 +1616,7 @@ def main():
         except Exception:
             print('⚠️ indisponible, LLM seul')
 
-    print(f'\n\U0001f916 Agent PC v12.17 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.19 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     tools_line = '   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell'
     if WEBSEARCH_ENABLED:

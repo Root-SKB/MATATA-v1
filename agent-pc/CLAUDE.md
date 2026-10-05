@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (currently a single file, current version: v12.17)
+- agent.py — Main agent script (currently a single file, current version: v12.19)
 - web/index.html — minimal chat UI served by `--serve` (`GET /`), self-contained (inline CSS/JS)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
@@ -30,8 +30,69 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     # API web minimale (Phase 1), N2/N3 refusés à distance :
     MATATA_SERVE_TOKEN=change-me python3 agent-pc/agent.py --serve --timer
 
-## Current Version: v12.17 (3 real bugs found via production --serve usage, all fixed)
+## Current Version: v12.19 (web_search self-reformulation, dynamic SYSTEM prompt)
 3 core tools (run_shell, search_files, system_info) + web_search gated dynamically
+- v12.19: **user asked**: "if it searches and doesn't find anything, can it adapt its
+  search and launch another one itself, a bit like you [Claude] do?" Good question —
+  architecturally the 5-step `agent_turn()` loop already allows multiple sequential tool
+  calls (including `web_search` twice with different queries), but nothing told the model
+  to actually do that instead of giving up after one try — unlike `run_shell`, which has
+  an explicit rule (11: "if a command fails, NEVER redo it with cosmetic changes... adapt")
+  for exactly this situation.
+  **Fix**: added rule 14 to `SYSTEM` — "web_search: if results are empty or not relevant to
+  the question, do NOT give up after one try — reformulate with different/simpler keywords
+  ... and search again" — same spirit as rule 11, and softened `handle_web_search()`'s empty
+  result message from `"No results found."` to `"No results found. Try different or simpler
+  keywords."` (an actionable nudge, matching the existing dedup message style: `"ERROR: Same
+  command failed before. Use a DIFFERENT simpler approach."`).
+  **Caught before shipping**: a first version added rule 14 unconditionally whenever
+  `MATATA_WEBSEARCH` is on, regardless of whether `web_search` is actually exposed for a
+  given call. Running `tests.sh` right after showed the hardest query ("Combien de séries
+  avec taille ?", which never uses `web_search` — classified `file_search`) fail once with
+  the same raw `<tool_call>` text-blob symptom from v12.16's pre-fix tool-count ceiling
+  bug. 3 immediate repeats of the same query all succeeded, so this one failure alone
+  didn't prove causation (this test has pre-existing ~25% flakiness, documented since
+  v12.16) — but the risk was real and cheap to eliminate: rule 14 is now injected into the
+  prompt **only on turns where `web_search` is actually exposed**. Refactored `SYSTEM`
+  into `_build_system(include_websearch_rule)`, precomputing two variants once at module
+  load (`SYSTEM` without rule 14, `SYSTEM_WEBSEARCH` with it); `handle_turn()` now sets
+  `messages[0]['content']` to whichever variant matches the `tools_for_turn` decision it
+  already makes for `CORE_TOOLS` vs `TOOLS` — same dynamic-gating principle applied to the
+  prompt text, not just the tool list. Safe to mutate `messages[0]` in place: `trim_messages()`
+  always preserves index 0 as the system message, and `--serve` already serializes turns
+  under `run_server()`'s lock.
+  **Validated**: direct check that `route_intent()` + the new selection logic picks
+  `SYSTEM_WEBSEARCH` (rule 14 present) for a weather query and plain `SYSTEM` (rule 14
+  absent) for the series query. `tests.sh` 5/5 clean after the fix (including the hard
+  series test). Real end-to-end test of a 2-part question ("la population de Tokyo et de
+  Paris") showed the model answering from a single combined search rather than firing a
+  second refined search for the less-precise Tokyo figure — a reminder that reformulation
+  is instruction-following like any other rule (same as rule 11), not a hard guarantee.
+  `test_fixes.py` unaffected.
+- v12.18: **user asked for a real end-to-end mic test through the actual browser UI**
+  (not another `curl`/CLI test — the mic specifically). Automated headless Chrome via raw
+  CDP (`websocket-client`, no playwright/selenium installed) with
+  `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream --use-file-for-fake-
+  audio-capture=<wav>` to feed a Piper-synthesized clip ("Quelle est la météo à Paris
+  aujourd'hui ?") as the fake microphone input, clicked `#micBtn` twice via `Runtime.
+  evaluate` (start/stop recording) to trigger the real `MediaRecorder` → `/voice/` →
+  `ffmpeg` → whisper → router → agent path, exactly as a real user would.
+  **Result: the full pipeline works end-to-end** — transcript bubble, `web_search` tool
+  correctly exposed by the router (classified `web_search` despite whisper mis-hearing
+  "Paris" as "apparaître" — the router stayed robust to the corrupted transcript), SSE
+  streaming, timer, all rendered correctly in a screenshot.
+  **But one real call failed**: `ddgs` threw `DNSError: ... no records found for Query {
+  name: Name("www.startpage.com.taila06900.ts.net.")...}` — the Tailscale MagicDNS search
+  suffix got appended to a `ddgs` backend's (startpage) hostname lookup and failed to
+  resolve. Re-tested 3x immediately after in isolation: 3/3 succeeded instantly — **not
+  systematic**, a transient hiccup from `ddgs`'s multi-backend rotation (startpage/
+  duckduckgo/etc.), consistent with the already-documented fragility of this unofficial
+  scraping library (see v12.16/TECH_WATCH.md).
+  **Fix**: `handle_web_search()` now retries once (0.5s pause) before giving up, instead
+  of surfacing the first transient failure straight to the user. Verified with a mocked
+  `DDGS` that fails on the first call and succeeds on the second — confirms 2 calls made,
+  correct result returned, ~0.5s added latency (the retry pause). `tests.sh` 5/5,
+  `test_fixes.py` unaffected (no change outside `handle_web_search`).
 - v12.17: **user ran `--serve` for real use** (not a scripted test) and pasted the full
   terminal + web UI transcript for analysis. Found and fixed 3 concrete bugs, all
   reproduced in isolation before fixing (not just inferred from the transcript):
