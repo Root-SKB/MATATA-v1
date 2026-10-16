@@ -34,6 +34,7 @@ def _pick_bin(rel, build_dirs=('build-vulkan', 'build')):
 
 WHISPER_BIN = _pick_bin('whisper-cli')
 WHISPER_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-small.bin')
+WHISPER_VAD_MODEL = os.path.join(_VOICE_DIR, 'models', 'ggml-silero-v6.2.0.bin')
 VOICE_MODELS = {
     'fr': os.path.join(_VOICE_DIR, 'models', 'fr_FR-siwis-medium.onnx'),
     'en': os.path.join(_VOICE_DIR, 'models', 'en_US-lessac-medium.onnx'),
@@ -60,14 +61,16 @@ def _whisper_server_start():
     if not os.path.exists(_WHISPER_SERVER_BIN):
         return False
     try:
-        # VAD native whisper.cpp (v1.8.4+, on est en v1.9.3-dev) : ~0.94s/passe conservé,
+        # VAD native whisper.cpp (v1.8.4+, build actuel v1.9.5) : ~0.94s/passe conservé,
         # retire les silences avant transcription. Toggle : MATATA_WHISPER_VAD=0 pour désactiver.
         _whisper_cmd = [_WHISPER_SERVER_BIN, '-m', WHISPER_MODEL,
                         '--port', str(_WHISPER_SERVER_PORT),
                         '-t', '4', '--no-speech-thold', '0.6',
                         '--no-language-probabilities', '--audio-ctx', '0']
-        if os.environ.get('MATATA_WHISPER_VAD', '1') != '0':
-            _whisper_cmd.append('--vad')
+        # --vad exige un modèle Silero (--vad-model) : sans lui, whisper-server répond
+        # "failed to process audio" à chaque requête et l'agent retombait sur la CLI.
+        if os.environ.get('MATATA_WHISPER_VAD', '1') != '0' and os.path.exists(WHISPER_VAD_MODEL):
+            _whisper_cmd += ['--vad', '--vad-model', WHISPER_VAD_MODEL]
         _whisper_server_proc = subprocess.Popen(
             _whisper_cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
