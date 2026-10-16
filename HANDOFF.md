@@ -388,6 +388,20 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
       et tout framework (Pipecat/LiveKit) ou modèle speech-to-speech unique (chemin 3) — à
       mesurer seulement si/quand le besoin se confirme, jamais par défaut.
 
+22. **Maintenance technique (16/10/2026, sans bump de version agent)** — audit demandé de l'état
+    du PC (Ubuntu 24.04.5, noyau 6.17.0-1033-oem, Ollama 0.32.15, libs Python) vs dernières
+    versions. **Gardés** : noyau/Ubuntu/Mesa (rien d'utile pour l'iGPU), Ollama 0.32.15 (0.40.5
+    existe, notes lues : rien sur Intel/Vulkan/tool calling Qwen3, et migration des modèles à
+    sens unique depuis 0.40.2 — à n'essayer qu'avec benchmark avant/après). **whisper.cpp mis à
+    jour en v1.9.5** (transcriptions identiques, temps équivalents). **Bug trouvé et corrigé** :
+    `whisper-server --vad` sans `--vad-model` faisait échouer chaque requête depuis v12.6 (repli
+    CLI silencieux) ; modèle Silero téléchargé et branché. **Nettoyage** : code mort/imports en
+    doublon dans `agent.py`, `CHANGES.diff` + notebooks v1-v4 supprimés, version du paquet
+    alignée (12.21.0). Validé : `tests.sh` 5/5, `test_fixes.py`. Détail dans
+    `agent-pc/CLAUDE.md` (entrée Maintenance 2026-10-16).
+    **À faire** : tester `--wake` en conditions réelles avec la VAD (faux positifs / rappels),
+    puis supprimer `voice/whisper.cpp/build-vulkan.old` ; décider d'un benchmark Ollama 0.40.
+
 ## Fichiers concernés
 
 | Fichier | Rôle |

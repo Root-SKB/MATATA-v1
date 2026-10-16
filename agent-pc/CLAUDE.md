@@ -32,6 +32,30 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
 
 ## Current Version: v12.21 (thread-safe SSE stream sink)
 3 core tools (run_shell, search_files, system_info) + web_search gated dynamically
+- Maintenance 2026-10-16 (pas de bump de version agent) : état technique du PC audité
+  (Ubuntu 24.04.5, noyau 6.17.0-1033-oem, Mesa 25.2.8 : conservés — l'iGPU passe par Mesa/
+  Vulkan en espace utilisateur, le HWE 7.0 n'apporterait rien de mesurable).
+  **whisper.cpp** : mis à jour de 233fe1f (v1.9.3-dev) à **v1.9.5** (build-vulkan recompilé) ;
+  16 clips de test : transcriptions identiques, temps équivalents. **Bug corrigé** : depuis
+  la v12.6 `_whisper_server_start()` lançait `whisper-server --vad` SANS `--vad-model` →
+  chaque requête répondait `failed to process audio` (vérifié sur l'ancien et le nouveau
+  build) et l'agent retombait en silence sur `whisper-cli` (modèle rechargé à chaque appel).
+  Corrigé : `--vad --vad-model voice/models/ggml-silero-v6.2.0.bin` ajouté si le fichier
+  existe (sinon démarrage sans VAD ; `MATATA_WHISPER_VAD=0` désactive toujours). Modèle
+  Silero (885 Ko, `ggml-org/whisper-vad`) téléchargé une fois via
+  `voice/whisper.cpp/models/download-vad-model.sh silero-v6.2.0 voice/models`, gitignoré.
+  Mesuré : ~0,9 s par clip court via le serveur. Qualité VAD vs sans VAD non tranchée (pas de
+  transcriptions de référence) ; sans VAD le serveur hallucine « à la prochaine ! » sur
+  silence/bruit. À valider en conditions réelles avec `--wake`.
+  **Ollama** : 0.32.15 conservé (dernière 0.40.5). Notes de version 0.33-0.40 lues : rien sur
+  Intel/Vulkan/tool calling Qwen3, surtout du MLX (macOS). Risque : depuis 0.40.2 les modèles
+  sont migrés vers llama.cpp au 1er lancement avec copie de sauvegarde (le dossier de modèles
+  de 26 Go grossit ; repasser sous 0.40 impose de re-pull). À ne tenter qu'avec un benchmark
+  avant/après (`tests.sh` + requête « Combien de séries avec taille ? »).
+  **Nettoyage** : `_ollama_stream` renvoie `(delta, tool_calls)` (le `done` n'était lu par
+  personne), imports `wave`/`array` locaux en doublon retirés, f-strings sans variable ;
+  `CHANGES.diff` et notebooks `matata_colab.ipynb` à `_v4` supprimés (v5 conservé) ;
+  version du paquet `matata` alignée sur 12.21.0. `tests.sh` 5/5, `test_fixes.py` OK.
 - v12.21: **user asked for a "real-time chat" status check** on `--serve`; while
   answering, re-reading `run_server()`'s streaming path found a genuine concurrency bug:
   `_STREAM_SINK` (the hook `_emit_stream()` uses to relay tokens to the right SSE
@@ -476,6 +500,8 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   IS_REMOTE still needs an actual remote channel (Tailscale-facing bridge) to ever flip True.
   Also: VAD native whisper.cpp branchée dans _whisper_server_start() — --vad ajouté au
   server (build-vulkan), toggle MATATA_WHISPER_VAD=0 pour désactiver.
+  (CORRECTION 2026-10-16 : sans `--vad-model` le serveur échouait à chaque requête ; le
+  modèle Silero n'a été branché qu'à cette date, voir l'entrée Maintenance en haut.)
 - v10.1: Bug 1 (dedup sliding window of 5) + Bug 2 (200-char cap) fixed
 - v10.2: Bug 3 fixed — output caps 600 (shell/search) / 800 (system_info)
 - v10.3: empty-response retry keeps tools (fixes JSON-text dead-end);
@@ -517,6 +543,8 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   agent.py choisit par binaire (Vulkan d'abord, fallback CPU) via _pick_bin() — cli et
   server sélectionnés indépendamment.
   Models in voice/models/: ggml-small.bin (~466MB, HF ggerganov/whisper.cpp);
+  ggml-silero-v6.2.0.bin (885KB, VAD, `sh whisper.cpp/models/download-vad-model.sh
+  silero-v6.2.0 voice/models`) ; build actuel whisper.cpp **v1.9.5** (`git checkout v1.9.5`);
   Piper voices fr_FR-siwis-medium + en_US-lessac-medium (~61MB each,
   HF rhasspy/piper-voices). Voice config jsons ARE committed (5KB each).
 - Pipeline: whisper-server persistant (port 18080, HTTP API multipart, fallback CLI)
@@ -637,6 +665,8 @@ tool-behavior one — also fixed v12.17, see the Safety section of `AGENTS.md`.
 - whisper-server (v12.4): modèle ggml-small.bin chargé 1× au démarrage voice/wake mode,
   HTTP API sur port 18080 (MATATA_WHISPER_PORT), fallback CLI si serveur indisponible.
   Env: MATATA_WHISPER_PORT (défaut 18080). Arrêt automatique en fin de session.
+  VAD Silero (`--vad --vad-model ggml-silero-v6.2.0.bin`) activée seulement si ce fichier
+  existe ; MATATA_WHISPER_VAD=0 la désactive.
 - Piper Python API (v12.4): import piper.PiperVoice, lazy-load par langue (1,1s first call),
   synthèse in-process (0,1s), piped to aplay. Zéro subprocess piper.
 - Do NOT run `ollama serve` manually: it would look at ~/.ollama (empty) and re-download models.

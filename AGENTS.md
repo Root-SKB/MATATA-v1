@@ -79,11 +79,11 @@ python3 -m py_compile agent-pc/agent.py
 
 - `--voice`: push-to-talk (Enter → parle → Enter), whisper.cpp STT → Ollama → Piper TTS
 - `--wake`: hands-free with wake word "MATATA" — veille permanente, double barrière anti-FP (openwakeword + confirmation whisper)
-- **whisper-server** (v12.4): modèle chargé 1× au démarrage, HTTP API port 18080, fallback CLI si indisponible
+- **whisper-server** (v12.4): modèle chargé 1× au démarrage, HTTP API port 18080, fallback CLI si indisponible. whisper.cpp **v1.9.5** (2026-10-16). VAD Silero (`--vad-model`) branchée seulement si `voice/models/ggml-silero-v6.2.0.bin` existe — avant le 2026-10-16 `--vad` était passé sans modèle et chaque requête serveur échouait (repli silencieux sur la CLI) ; `MATATA_WHISPER_VAD=0` la désactive
 - **stream=True** (v12.4): premier token LLM visible en ~1-2s au lieu de ~15s d'attente muette
 - **Piper Python API** (v12.4): lazy-load in-process (1,1s first call, 0,1s synth), zéro subprocess piper
 - **Streaming TTS phrase-par-phrase** (v12.7): parle chaque phrase dès qu'elle est complète dans le stream LLM (regex `SPEAK_SENTENCE_RE`, patron extrait de LocalVox) au lieu d'attendre la réponse entière — gardé par `tool_calls is None` et `INCOMPLETE_PATTERNS` pour ne jamais parler un préambule de tool call ni un texte en cours de retry silencieux
-- **MODELS** voice dans `voice/models/`: ggml-small.bin (whisper), fr_FR-siwis-medium + en_US-lessac-medium (Piper), matata.onnx (wake word R3)
+- **MODELS** voice dans `voice/models/`: ggml-small.bin (whisper), ggml-silero-v6.2.0.bin (VAD), fr_FR-siwis-medium + en_US-lessac-medium (Piper), matata.onnx (wake word R3)
 - Wake word entraîné via Colab R1→R3, validé holdout 4/6, fragments Piper 0/6 FP
 
 ## Known bugs (unfixed)
