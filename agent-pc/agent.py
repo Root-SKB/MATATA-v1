@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent PC v12.19 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
+"""Agent PC v12.21 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
 
 import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
 import urllib.request, io, uuid, wave
@@ -828,15 +828,26 @@ SPEAK_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
 # Hook optionnel pour relayer le texte streamé en direct vers le client --serve
 # (Server-Sent Events) pendant qu'agent_turn tourne. None en CLI/voix/wake —
-# zéro changement de comportement hors --serve (modularité). Assigné/nettoyé
-# par run_server() SOUS le lock qui sérialise déjà les tours, donc aucune
-# course possible entre deux requêtes concurrentes.
-_STREAM_SINK = None
+# zéro changement de comportement hors --serve (modularité).
+# BUG FIX (v12.21) : c'était une simple variable globale, assignée/nettoyée par
+# run_server() en pensant être protégée par le lock qui sérialise les tours —
+# mais l'assignation (`_STREAM_SINK = sink`) avait lieu AVANT le `with lock:`,
+# pas dedans. `ThreadingHTTPServer` lance un thread par connexion : deux
+# requêtes /chat//voice/ concurrentes pouvaient donc s'écraser ce sink l'une
+# l'autre pendant qu'une génération était en cours — soit en route les tokens
+# d'une requête vers la connexion SSE d'une AUTRE (cross-talk), soit en le
+# remettant à None pendant qu'un tour tournait encore (plus aucun event, juste
+# le "done" final d'un coup, perte du streaming en direct). Fixé en passant à
+# threading.local() : chaque thread de requête a son propre sink, aucune
+# visibilité croisée possible, sans toucher à la sérialisation du lock (qui ne
+# protège toujours que `messages`/`agent_turn`, pas ce hook).
+_STREAM_CTX = threading.local()
 
 def _emit_stream(event_type, **kw):
-    if _STREAM_SINK:
+    sink = getattr(_STREAM_CTX, 'sink', None)
+    if sink:
         try:
-            _STREAM_SINK(event_type, **kw)
+            sink(event_type, **kw)
         except Exception:
             pass
 
@@ -1436,7 +1447,6 @@ def run_server(messages, show_timer):
                 pass  # client a fermé la connexion : rien à faire, le tour continue côté serveur
 
         def _run_turn_streaming(self, inp, extra_data=None, _already_started=False):
-            global _STREAM_SINK
             if not _already_started:
                 self._sse_start()
 
@@ -1445,7 +1455,7 @@ def run_server(messages, show_timer):
 
             t0 = time.time()
             try:
-                _STREAM_SINK = sink
+                _STREAM_CTX.sink = sink
                 with lock:
                     handle_turn(inp, messages, show_timer)
                     last = messages[-1]
@@ -1459,7 +1469,7 @@ def run_server(messages, show_timer):
                 self._sse_send({'type': 'done', 'ok': False, 'message': 'An error occurred',
                                  'data': {'error': str(e)}})
             finally:
-                _STREAM_SINK = None
+                _STREAM_CTX.sink = None
 
         def do_GET(self):
             if self.path == '/health':
@@ -1616,7 +1626,7 @@ def main():
         except Exception:
             print('⚠️ indisponible, LLM seul')
 
-    print(f'\n\U0001f916 Agent PC v12.19 \u2014 {MODEL}' +
+    print(f'\n\U0001f916 Agent PC v12.21 \u2014 {MODEL}' +
           ('  \U0001f43b mains libres' if WAKE else ('  \U0001f3a4 voix' if VOICE else '')))
     tools_line = '   \U0001f50d search | \U0001f4ca sys | \U0001f4cb shell'
     if WEBSEARCH_ENABLED:

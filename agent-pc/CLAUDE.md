@@ -14,7 +14,7 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   remote, CRITICAL/N3 ask confirmation LOCAL ONLY, BLOCKED never)
 
 ## Files
-- agent.py — Main agent script (currently a single file, current version: v12.19)
+- agent.py — Main agent script (currently a single file, current version: v12.21)
 - web/index.html — minimal chat UI served by `--serve` (`GET /`), self-contained (inline CSS/JS)
 - requirements.txt — Pinned deps (ollama>=0.6.2,<0.7)
 - test_fixes.py — Unit tests (dedup + length limit, no Ollama needed)
@@ -30,8 +30,55 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
     # API web minimale (Phase 1), N2/N3 refusés à distance :
     MATATA_SERVE_TOKEN=change-me python3 agent-pc/agent.py --serve --timer
 
-## Current Version: v12.19 (web_search self-reformulation, dynamic SYSTEM prompt)
+## Current Version: v12.21 (thread-safe SSE stream sink)
 3 core tools (run_shell, search_files, system_info) + web_search gated dynamically
+- v12.21: **user asked for a "real-time chat" status check** on `--serve`; while
+  answering, re-reading `run_server()`'s streaming path found a genuine concurrency bug:
+  `_STREAM_SINK` (the hook `_emit_stream()` uses to relay tokens to the right SSE
+  connection) was a single module-level global, assigned right before `with lock:` and
+  cleared right after — a stale comment claimed this assignment happened "under the
+  lock" (so serialized, hence safe), but the code actually set/cleared it **outside**
+  the lock. `http.server.ThreadingHTTPServer` runs each connection in its own thread, so
+  two concurrent `/chat/`/`/voice/` requests could race: thread B's assignment could
+  overwrite thread A's sink while A's generation (inside the lock) was still emitting
+  tokens through the old global — routing A's in-progress tokens to B's socket
+  (cross-talk), and/or zeroing the sink mid-stream so a request's own tokens silently
+  stopped emitting (degrading to a single full-text `done` event instead of live
+  streaming). The lock only ever serialized `messages`/`agent_turn`, never this hook.
+  **Fix**: replaced the global with `threading.local()` (`_STREAM_CTX`, `.sink`
+  attribute) — each request thread gets its own isolated sink, no cross-thread
+  visibility possible, independent of the lock. CLI/voice/wake modes never touch
+  `_STREAM_CTX`, so `_emit_stream()` still no-ops there exactly as before (zero
+  behavior change outside `--serve`).
+  **Validated**: fired two concurrent `/chat/` requests against a live `--serve`
+  instance with distinct, recognizable prompts (count 1-10 in French vs. answer with a
+  single unique marker word) — each client's SSE stream showed only its own tokens in
+  order, no cross-talk, final `done.data.reply` correct for both (one request queues
+  behind the other via the lock as expected — `elapsed_s` 18.1s vs 19.9s — but the
+  streaming itself is now isolated). `test_fixes.py` unaffected (no `agent.py` logic
+  outside the stream hook changed).
+- v12.20: closed the known UX gap documented since v12.17 — typing `reset`, `clear`,
+  `exit`, `quit`, `bye`, `q`, or a short French equivalent (`au revoir`, `arrête-toi`,
+  `quitter`, `stop`) into the web chat box was previously just sent as a normal message
+  to `/chat/`, subject to router misclassification, and never actually reset server-side
+  conversation state (only `POST /reset/` did that). **Fix**: `web/index.html` now
+  intercepts these short commands client-side, before they ever reach `/chat/`.
+  `matchCommand(text)` mirrors `_voice_cmd()`'s tolerant matching (accents/punctuation
+  stripped, decision on the last 1-2 words, phrase <= 3 words) so the recognized
+  vocabulary stays consistent across CLI/voice/web — ported to JS rather than shared,
+  since the web UI is a single self-contained HTML file with zero build step (see
+  Architecture: "self-contained, inline CSS/JS"). A match calls `POST /reset/` directly
+  (not `/chat/`) and shows a small system bubble (`🔄 Conversation reset.` / `👋 Bye —
+  conversation reset.`) instead of a model reply; anything longer or not in the
+  vocabulary falls through to the normal chat flow unchanged. English-only UI text, per
+  the existing "whole `--serve` surface is English" convention. **Scope note**: for the
+  CLI, `quit` exits the process; there's no equivalent "exit" action in a browser tab, so
+  both `reset`- and `quit`-style phrases map to the same action here — resetting the
+  server-side conversation, the closest meaningful equivalent in a web context.
+  Validated: `GET /health` + `POST /reset/` round-tripped manually against a live
+  `--serve` instance, confirmed the served `index.html` carries the new functions, and a
+  `POST /chat/` sanity call still streams normally — `test_fixes.py` unaffected (no
+  `agent.py` logic changed, this is a client-side-only fix).
 - v12.19: **user asked**: "if it searches and doesn't find anything, can it adapt its
   search and launch another one itself, a bit like you [Claude] do?" Good question —
   architecturally the 5-step `agent_turn()` loop already allows multiple sequential tool
@@ -142,11 +189,11 @@ Part of the MATATA ecosystem (Phase 1). Runs on the Intel Arc iGPU via Vulkan �
   '~/Downloads'})` now returns the real file directly instead of an error; a live end-to-
   end run of "Y a-t-il des fichiers mkv dans mon dossier Downloads ?" resolved in 1 step/
   27s instead of the original session's 5 steps/71s). `tests.sh` 5/5, `test_fixes.py`
-  unaffected. Also found but **not yet fixed** (lower priority, UX gap not a bug): the web
-  UI has no equivalent to the CLI's special text commands (`reset`/`quit`) — `/clear`,
-  `exit`, `bye` typed in the browser chat are just normal messages, subject to router
-  misclassification, and never actually reset server-side conversation state (only
-  `POST /reset/` does that).
+  unaffected. Also found (lower priority, UX gap not a bug): the web UI had no equivalent
+  to the CLI's special text commands (`reset`/`quit`) — `/clear`, `exit`, `bye` typed in
+  the browser chat were just normal messages, subject to router misclassification, and
+  never actually reset server-side conversation state (only `POST /reset/` did that).
+  **Fixed in v12.20**, see that entry above.
   **4 more inconsistencies found in a self-audit pass** (user: "vérifie bien il semble
   avoir toujours des incohérence" — right to push back, this round wasn't from a pasted
   session, it's from re-reading the code and docs critically after the first 3 fixes):

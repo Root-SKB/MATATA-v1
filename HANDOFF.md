@@ -1,6 +1,6 @@
 # HANDOFF — MATATA local-first evolution + veille technique
 
-Rédigé le 2026-09-28 en fin de session. À lire en premier dans une session neuve.
+Rédigé le 2026-09-28, mis à jour le 2026-10-12 en fin de session. À lire en premier dans une session neuve.
 
 ## Objectif de la tâche
 
@@ -323,6 +323,70 @@ acceptés SEULEMENT si (a) 100% gratuits ET (b) gain réel mesuré — jamais un
     `web_search` est réellement exposé (`SYSTEM`/`SYSTEM_WEBSEARCH` précalculés, basculés au
     même endroit que `CORE_TOOLS`/`TOOLS`). `tests.sh` 5/5 après correction. Détail complet dans
     `agent-pc/CLAUDE.md` (v12.19).
+
+18. **Commandes `reset`/`quit` côté web (12/10/2026, v12.20)** — fermait le gap UX repéré mais
+    pas corrigé en v12.17 (item 14 ci-dessus) : taper `reset`/`clear`/`exit`/`quit`/`bye`/`q`/
+    équivalent FR (`au revoir`, `quitter`, `arrête-toi`, `stop`) dans le chat web était juste du
+    texte normal envoyé à `/chat/`, mal classé par le routeur, et ne réinitialisait rien côté
+    serveur. **Corrigé** : `web/index.html` intercepte ces commandes courtes côté client
+    (`matchCommand()`, même tolérance accents/ponctuation/≤3 mots que `_voice_cmd()` côté
+    agent.py, portée en JS faute de code partagé dans une page HTML autonome) et appelle
+    `POST /reset/` directement au lieu de `/chat/`. Zéro changement `agent.py`. Validé par un
+    appel réel `POST /reset/` + `GET /` confirmant que la page servie contient bien les nouvelles
+    fonctions. Détail complet dans `agent-pc/CLAUDE.md` (v12.20).
+19. **Bug de concurrence réel trouvé en répondant à une question de l'utilisateur, puis corrigé
+    (12/10/2026, v12.21)** — l'utilisateur demandait un état des lieux "`--serve` vs un vrai chat
+    temps réel" ; en relisant `run_server()` pour répondre, découverte que `_STREAM_SINK` (le
+    hook qui route les tokens streamés vers la bonne connexion SSE) était une simple variable
+    globale, assignée/nettoyée juste AVANT/APRÈS le `with lock:` plutôt que dedans — un
+    commentaire affirmait à tort que c'était protégé par le lock. `ThreadingHTTPServer` donne un
+    thread par connexion : deux requêtes `/chat/`/`/voice/` concurrentes pouvaient donc s'écraser
+    ce sink pendant qu'une génération tournait encore, routant les tokens d'une requête vers la
+    connexion SSE d'une AUTRE (cross-talk), ou le remettant à `None` en cours de route (plus
+    aucun event, juste le `done` final d'un coup). **Corrigé** avec `threading.local()`
+    (`_STREAM_CTX.sink`) — chaque thread de requête isolé, CLI/voix/wake inchangés (ce hook n'y
+    est jamais touché). **Validé par un vrai test de concurrence** : 2 requêtes `/chat/`
+    simultanées avec des prompts distincts et reconnaissables (compter 1-10 en FR vs répondre un
+    mot-marqueur unique) contre une instance `--serve` live — chaque client n'a reçu que ses
+    propres tokens, zéro mélange, la 2e requête attendant bien son tour derrière le lock comme
+    prévu (18.1s vs 19.9s). `test_fixes.py` + `py_compile` inchangés. Détail complet dans
+    `agent-pc/CLAUDE.md` (v12.21).
+20. **Recherche approfondie "vrai chat vocal temps réel" (12/10/2026)** — demande explicite de
+    l'utilisateur : où en est l'état de l'art 2026 du vocal full-duplex/interruptible en local
+    (type Gemini Live/ChatGPT Voice Mode), et comment ça s'appliquerait à MATATA (PC + navigateur
+    mobile via Tailscale, frameworks seulement si gain réel mesuré). Recherche menée via un
+    sub-agent dédié (15 recherches/fetches web). **Conclusions principales** : les modèles
+    speech-to-speech de bout en bout (Kyutai Moshi/Unmute, NVIDIA PersonaPlex) restent écartés
+    (7B+, CUDA/Apple Silicon supposé, rien sur iGPU Vulkan) ; la voie réaliste est un pipeline en
+    cascade (VAD → STT streaming → LLM → TTS streaming), extension directe de ce qu'`agent.py`
+    fait déjà en CLI. Piper confirmé toujours meilleur que Kokoro sur CPU (3 benchmarks
+    indépendants, 2-9x plus rapide) — rien à changer côté TTS. Aucun framework (Pipecat/LiveKit/
+    FastRTC) ne montre d'exemple 100% local comme notre stack — pas adopté tant que le gain n'est
+    pas mesuré sur NOTRE config, même logique que semantic-router/smolagents avant eux.
+    **Point bloquant confirmé** : `getUserMedia()` (micro navigateur) exige un secure context
+    (HTTPS/localhost) — une IP Tailscale brute en HTTP ne marchera jamais pour le micro mobile ;
+    `tailscale serve` (certificat HTTPS auto) est un prérequis infra à poser avant tout code
+    vocal `--serve`, indépendant de l'approche choisie ensuite. Détail complet (tableau
+    comparatif STT/TTS/frameworks, sources) dans `docs/TECH_WATCH.md`, Partie 1quater. **Aucune
+    implémentation faite** — recherche pure, à lire avant d'attaquer l'item 21 ci-dessous.
+21. **[À FAIRE — prochaine session]** **Chemin 1 : réponse vocale sur `--serve` (semi-duplex)**,
+    priorité retenue suite à la recherche de l'item 20 :
+    - **Prérequis infra, à poser en premier** : `tailscale serve` pour exposer `--serve` en HTTPS
+      (`*.ts.net`, certificat auto) — sans ça, `getUserMedia()` ne donnera jamais accès au micro
+      depuis le navigateur d'un smartphone (confirmé bloquant, pas de contournement).
+    - **Implémentation** : réutiliser le découpage par phrase déjà prouvé en CLI (v12.7,
+      `SPEAK_SENTENCE_RE`) pour synthétiser chaque phrase via Piper et la livrer au navigateur
+      (nouveau canal/endpoint, derrière un flag modulaire type `MATATA_SERVE_VOICE_REPLY` —
+      même patron que `MATATA_ROUTER`/`MATATA_WEBSEARCH`, désactivable sans rien casser).
+      Reste semi-duplex (parle → attend → écoute), mais ferme le vrai gap constaté par
+      l'utilisateur (vocal en entrée fonctionnel, texte seul en sortie).
+    - **À valider empiriquement avant de livrer** : latence perçue sur un vrai trajet Tailscale
+      depuis un téléphone (pas juste en local), et que `tailscale serve` est bien en place côté
+      infra avant de tester le micro mobile.
+    - **Pas encore pour cette étape** (voir Partie 1quater de `docs/TECH_WATCH.md` pour les
+      chemins 2 et 3) : barge-in/interruption réelle (chemin 2, Silero VAD + WebSocket continu),
+      et tout framework (Pipecat/LiveKit) ou modèle speech-to-speech unique (chemin 3) — à
+      mesurer seulement si/quand le besoin se confirme, jamais par défaut.
 
 ## Fichiers concernés
 

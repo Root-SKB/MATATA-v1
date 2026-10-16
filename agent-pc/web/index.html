@@ -341,12 +341,59 @@ function handleTurnEvents(pending) {
   };
 }
 
+// Recognizes short reset/quit-style commands (e.g. "reset", "clear", "bye",
+// "exit") the way a user coming from the CLI or voice mode would naturally
+// type them, so they trigger a real POST /reset/ instead of being sent as a
+// normal chat message to the LLM (see AGENTS.md known-bugs: "web UI has no
+// equivalent to the CLI's special text commands"). Mirrors _voice_cmd()'s
+// tolerant matching (accents/punctuation stripped, decision on the last 1-2
+// words, phrase <= 3 words) so the vocabulary stays consistent across modes.
+const ACCENTS_MAP = { à:'a', â:'a', ä:'a', é:'e', è:'e', ê:'e', ë:'e', î:'i', ï:'i',
+                       ô:'o', ö:'o', ù:'u', û:'u', ü:'u', ç:'c' };
+const RESET_WORDS = new Set(['reset', 'clear']);
+const QUIT_WORDS = new Set(['aurevoir', 'arretetoi', 'quitter', 'exit', 'quit', 'stop', 'bye', 'q']);
+function matchCommand(text) {
+  const normalized = text.toLowerCase().replace(/[à-ü]/g, c => ACCENTS_MAP[c] || c);
+  const words = normalized.match(/[a-z]+/g) || [];
+  if (!words.length || words.length > 3) return null;
+  for (const n of [2, 1]) {
+    if (words.length < n) continue;
+    const cand = words.slice(-n).join('');
+    if (n === 1 && RESET_WORDS.has(cand)) return 'reset';
+    if (QUIT_WORDS.has(cand)) return 'quit';
+  }
+  return null;
+}
+
+async function runCommand(cmd) {
+  setBusy(true);
+  try {
+    let r = await fetch('/reset/', { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
+    if (r.status === 401) {
+      await promptToken();
+      r = await fetch('/reset/', { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}' });
+    }
+    const j = await r.json().catch(() => ({}));
+    const label = cmd === 'quit' ? '👋 Bye — conversation reset.' : '🔄 Conversation reset.';
+    addMsg(j.ok ? label : ((j.data && j.data.error) || 'An error occurred'), 'tool');
+  } catch (e) {
+    addMsg('Network error: ' + e.message, 'tool');
+  } finally {
+    setBusy(false);
+    input.focus();
+  }
+}
+
 async function sendText() {
   const text = input.value.trim();
   if (!text || busy) return;
   input.value = '';
   input.style.height = 'auto';
   addMsg(text, 'user');
+
+  const cmd = matchCommand(text);
+  if (cmd) return runCommand(cmd);
+
   setBusy(true);
   const pending = addTyping();
   try {
