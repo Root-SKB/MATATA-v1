@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matata"
-version = "12.6.0"
+version = "12.21.0"
 description = "MATATA — assistant IA local 100% hors-ligne (Ollama + whisper.cpp + Piper)"
 readme = "README.md"
 license = { text = "MIT" }
