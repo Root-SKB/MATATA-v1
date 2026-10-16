@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent PC v12.21 — 3+1 tools (web_search dynamique) + voix push-to-talk + mains libres (--wake) + N1/N2/N3 + interface web (--serve)"""
 
-import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random
+import subprocess, shlex, re, time, sys, threading, os, json, signal, ollama, random, array
 import urllib.request, io, uuid, wave
 from collections import deque
 from datetime import datetime
@@ -334,9 +334,8 @@ class MicStream:
 
 def wake_confirm(frames):
     """Vérifie via whisper que le pré-roll contient vraiment « matata »."""
-    import wave as _wave
     path = '/tmp/matata_wake_check.wav'
-    with _wave.open(path, 'wb') as w:
+    with wave.open(path, 'wb') as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
         w.writeframes(b''.join(frames))
     txt, _ = _stt_pass(path, 'fr')
@@ -349,7 +348,6 @@ def wake_confirm(frames):
 def capture_command(stream, start_timeout=6.0, skip_frames=0):
     """Enregistre la commande après le wake : endpointing énergie, max 10 s.
     skip_frames : jette les N premières frames (queue du bip/réverbération)."""
-    import array as _arr
     frames, speech, silence_run = [], False, 0
     t0 = time.time()
     skipped = 0
@@ -357,7 +355,7 @@ def capture_command(stream, start_timeout=6.0, skip_frames=0):
         if skipped < skip_frames:
             skipped += 1
             continue
-        a = _arr.array('h'); a.frombytes(raw)
+        a = array.array('h'); a.frombytes(raw)
         rms = (sum(v*v for v in a[::4]) / (len(a)//4)) ** 0.5 if len(a) else 0
         if not speech and time.time() - t0 > start_timeout:
             return None                      # rien dit -> abandon
@@ -373,9 +371,8 @@ def capture_command(stream, start_timeout=6.0, skip_frames=0):
             break
     if len(frames) * _FRAME / 16000 < 0.5:
         return None
-    import wave as _wave2
     path = '/tmp/matata_cmd.wav'
-    with _wave2.open(path, 'wb') as w:
+    with wave.open(path, 'wb') as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
         w.writeframes(b''.join(frames))
     return path
@@ -1097,14 +1094,14 @@ def trim_messages(msgs):
 
 # === AGENT TURN ===
 def _ollama_stream(messages, tools=None):
-    """Stream Ollama chat. Yield (text_delta, tool_calls, done)."""
+    """Stream Ollama chat. Yield (text_delta, tool_calls)."""
     kwargs = dict(model=MODEL, messages=messages, stream=True,
                   keep_alive='30m', options=CHAT_OPTS, **THINK_KW)
     if tools is not None:
         kwargs['tools'] = tools
     for chunk in ollama.chat(**kwargs):
         msg = chunk.get('message', {})
-        yield (msg.get('content', ''), msg.get('tool_calls'), chunk.get('done', False))
+        yield (msg.get('content', ''), msg.get('tool_calls'))
 
 def agent_turn(messages, show_timer, command_history=None, tools=None):
     if command_history is None:
@@ -1124,7 +1121,7 @@ def agent_turn(messages, show_timer, command_history=None, tools=None):
         speak_buf = ''      # phrases pas encore parlées (mode voix uniquement)
         safe_to_speak = True  # False dès qu'un pattern "je vais..." apparaît (retry probable)
         try:
-            for delta, tc, done in _ollama_stream(messages, tools=tools):
+            for delta, tc in _ollama_stream(messages, tools=tools):
                 if delta:
                     text_buf.append(delta)
                     print(delta, end='', flush=True)
@@ -1196,7 +1193,7 @@ def agent_turn(messages, show_timer, command_history=None, tools=None):
                 try:
                     rbuf = []
                     tc_retry = None
-                    for delta, tc, done in _ollama_stream(messages, tools=None):
+                    for delta, tc in _ollama_stream(messages, tools=None):
                         if delta:
                             rbuf.append(delta)
                             print(delta, end='', flush=True)
@@ -1211,7 +1208,7 @@ def agent_turn(messages, show_timer, command_history=None, tools=None):
                     rtxt = ''.join(rbuf)
                     if rtxt.strip():
                         if tc_retry:
-                            print(f'  ✅ Retry a trouvé un outil!')
+                            print('  ✅ Retry a trouvé un outil!')
                             messages.append({'role': 'assistant', 'content': rtxt, 'tool_calls': tc_retry})
                             tc0 = tc_retry[0]
                             fn = tc0.get('function', {})
@@ -1307,7 +1304,7 @@ def agent_turn(messages, show_timer, command_history=None, tools=None):
 
             # BUG FIX 1: Detect duplicate commands
             if cmd in command_history:
-                print(f'\U0001f6ab IDENTIQUE \u00e0 avant. Change d\'approche.')
+                print('\U0001f6ab IDENTIQUE \u00e0 avant. Change d\'approche.')
                 messages.append({'role': 'tool', 'content': 'ERROR: Same command failed before. Use a DIFFERENT simpler approach.'})
                 continue
 

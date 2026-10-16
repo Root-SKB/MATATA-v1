@@ -16,7 +16,7 @@ def test_command_fixes():
         print(f"❌ Test 1 FAIL: Command too long ({len(cmd1)} > 200)")
         return False
     if cmd1 in command_history:
-        print(f"❌ Test 1 FAIL: Duplicate command")
+        print("❌ Test 1 FAIL: Duplicate command")
         return False
     command_history.append(cmd1)
     print(f"✅ Test 1 PASS: Normal command accepted ({len(cmd1)} chars)")
@@ -26,14 +26,14 @@ def test_command_fixes():
     if len(cmd2) > 200:
         print(f"✅ Test 2 PASS: Long command rejected ({len(cmd2)} > 200 chars)")
     else:
-        print(f"❌ Test 2 FAIL: Long command should be rejected")
+        print("❌ Test 2 FAIL: Long command should be rejected")
         return False
 
     # Test 3: Duplicate command (should be rejected)
     if cmd1 in command_history:
-        print(f"✅ Test 3 PASS: Duplicate detected and rejected")
+        print("✅ Test 3 PASS: Duplicate detected and rejected")
     else:
-        print(f"❌ Test 3 FAIL: Duplicate not detected")
+        print("❌ Test 3 FAIL: Duplicate not detected")
         return False
 
     # Test 4: Same command twice = only 1 history entry
@@ -127,7 +127,7 @@ def test_dedup_integration():
         captured['tool'] = True
         # Capte la commande réellement émise pour pouvoir la rejouer identique
         yield ('', [{'function': {'name': 'run_shell',
-                                  'arguments': {'command': SAME_CMD}}}], True)
+                                  'arguments': {'command': SAME_CMD}}}])
     agent._COMMAND_HISTORY.clear()
     with mock.patch.object(agent, '_ollama_stream', side_effect=fake_stream):
         msgs1 = [{'role': 'system', 'content': agent.SYSTEM}, {'role': 'user', 'content': 'musique'}]
